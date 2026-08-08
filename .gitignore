@@ -1,0 +1,21 @@
+.env
+*.env
+openai.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Runtime data
+backups/
+postgres_data/
+*.sqlite
+*.sqlite-*
+
+# IDE/OS
+.idea/
+.vscode/
+.DS_Store
