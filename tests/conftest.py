@@ -13,8 +13,17 @@ async def create_schema() -> AsyncIterator[None]:
     from app.db.session import engine
     from app.tasks import models  # noqa: F401
 
+    if not engine.url.drivername.startswith("sqlite"):
+        try:
+            yield
+        finally:
+            await engine.dispose()
+        return
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-    yield
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.drop_all)
+    try:
+        yield
+    finally:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.drop_all)
+        await engine.dispose()

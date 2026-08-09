@@ -1,8 +1,10 @@
 import json
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tasks.models import AuditEvent, Task, TaskStatus
@@ -30,7 +32,16 @@ class TaskService:
 
         task = Task(**data.model_dump())
         self.session.add(task)
-        await self.session.flush()
+        try:
+            await self.session.flush()
+        except IntegrityError:
+            await self.session.rollback()
+            existing = await self.session.scalar(
+                select(Task).where(Task.idempotency_key == data.idempotency_key)
+            )
+            if existing is None:
+                raise
+            return cast(Task, existing)
         self._audit(task, "task.created", data.idempotency_key, data.model_dump())
         await self.session.commit()
         await self.session.refresh(task)

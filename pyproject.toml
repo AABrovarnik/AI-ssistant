@@ -40,6 +40,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["postgres: tests requiring PostgreSQL and RUN_POSTGRES_TESTS=1"]
 
 [tool.mypy]
 python_version = "3.12"
