@@ -32,4 +32,4 @@ curl http://127.0.0.1:8000/health/live
 
 Task Core provides durable tasks with statuses, priorities, deadlines and sources. Create operations are idempotent by `idempotency_key`; state-changing operations require `Idempotency-Key` and append an audit event in the same transaction.
 
-Endpoints: `POST /tasks`, `GET /tasks`, `GET /tasks/{id}`, `PATCH /tasks/{id}` and `POST /tasks/{id}/complete`.
+Endpoints: `POST /tasks`, `GET /tasks`, `GET /tasks/{id}`, `PATCH /tasks/{id}` and `POST /tasks/{id}/complete`. Task endpoints require `Authorization: Bearer $INTERNAL_API_TOKEN`.

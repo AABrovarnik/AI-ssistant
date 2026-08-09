@@ -7,12 +7,15 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import require_internal_api_token
 from app.db.session import get_db_session
 from app.tasks.models import Task, TaskStatus
 from app.tasks.schemas import TaskCreate, TaskRead, TaskUpdate
 from app.tasks.service import InvalidTaskTransitionError, TaskNotFoundError, TaskService
 
-router = APIRouter(prefix="/tasks", tags=["tasks"])
+router = APIRouter(
+    prefix="/tasks", tags=["tasks"], dependencies=[Depends(require_internal_api_token)]
+)
 
 
 def service(session: AsyncSession = Depends(get_db_session)) -> TaskService:

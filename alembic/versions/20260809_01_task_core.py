@@ -18,11 +18,6 @@ depends_on: Sequence[str] | None = None
 def upgrade() -> None:
     task_status = sa.Enum("open", "in_progress", "done", "cancelled", name="task_status")
     task_priority = sa.Enum("low", "normal", "high", name="task_priority")
-    bind = op.get_bind()
-    if bind.dialect.name == "postgresql":
-        task_status.create(bind, checkfirst=True)
-        task_priority.create(bind, checkfirst=True)
-
     op.create_table(
         "tasks",
         sa.Column("id", sa.Uuid(), nullable=False),
