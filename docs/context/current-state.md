@@ -9,7 +9,7 @@
 ## Статус
 
 - Phase 1 завершена и опубликована на GitHub.
-- Phase 2 реализована локально; polling ожидает ротации Telegram token.
+- Phase 2 реализована локально; polling активен после ротации Telegram token.
 - Reviewed dev pack хранится в `Posts/ai-secretary-v1.0-dev-pack/reviewed/`.
 
 ## Факты
@@ -23,13 +23,13 @@
 
 ## Безопасность и блокеры
 
-- Старый Telegram token получил `401`, а исходная версия httpx logging записала URL с token в Docker logs.
-- Worker остановлен; в локальном `.env` выставлен `TELEGRAM_MODE=disabled`.
-- Token нужно отозвать/перевыпустить через BotFather. После замены вернуть `TELEGRAM_MODE=polling` и проверить `getUpdates`.
-- Скомпрометированный token не записан в Git и не повторяется в handoff.
+- Старый Telegram token был отозван/заменён после `401` и попадания URL в старые Docker logs.
+- httpx request logging отключён для Telegram URL, а `401` прекращает polling без retry-loop.
+- Новый token прошёл `getMe`; в локальном `.env` выставлен `TELEGRAM_MODE=polling`.
+- Token не записан в Git и не повторяется в handoff.
 
 ## Следующие шаги
 
-1. Ротировать Telegram token и обновить локальный `.env`.
-2. Вернуть `TELEGRAM_MODE=polling`, поднять worker и проверить Telegram smoke вручную.
-3. Закоммитить Phase 2 и отправить commit на GitHub после проверки.
+1. Проверить команды и inline actions в Telegram от owner account.
+2. Закоммитить обновлённый handoff и отправить Phase 2 на GitHub.
+3. Перейти к Phase 3 — LLM Parsing.
