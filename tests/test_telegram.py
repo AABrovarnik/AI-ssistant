@@ -7,7 +7,7 @@ import pytest
 from app.integrations.telegram.bot import TelegramBot
 from app.integrations.telegram.client import TelegramClientProtocol
 from app.llm.schemas import MessageClassification, SearchDateFilter, SearchFilters, TaskCandidate
-from app.tasks.models import Task, TaskStatus, TaskType
+from app.tasks.models import Task, TaskEvent, TaskStatus, TaskType
 
 
 class FakeTelegramClient:
@@ -150,6 +150,7 @@ def test_task_keyboard_contains_phase2_actions() -> None:
         "⏳ Жду",
         "❌ Отмена",
         "🔔 Напомнить",
+        "📜 История",
     ]
 
 
@@ -204,6 +205,29 @@ def test_candidate_uses_russian_date_format() -> None:
     text = TelegramBot._format_candidate(candidate)
 
     assert "Срок: 12.08.2026 15:00" in text
+
+
+def test_history_is_not_in_card_and_has_explicit_formatter() -> None:
+    task_id = uuid4()
+    user_id = uuid4()
+    task = Task(id=task_id, user_id=user_id, title="Смета", status=TaskStatus.NEW)
+    events = [
+        TaskEvent(
+            task_id=task_id,
+            user_id=user_id,
+            event_type="STATUS_CHANGED",
+            old_value={"status": "NEW"},
+            new_value={"status": "DONE"},
+            created_at=datetime(2026, 8, 11, 12, 0, tzinfo=UTC),
+        )
+    ]
+
+    card = TelegramBot._format_tasks("Задача", [task])
+    history = TelegramBot._format_history(task, events)
+
+    assert "История" not in card
+    assert "Статус: Новая → Выполнена" in history
+    assert "11.08.2026 12:00" in history
 
 
 def test_candidate_keyboard_contains_confirmation_actions() -> None:

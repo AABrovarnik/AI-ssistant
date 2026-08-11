@@ -1,5 +1,6 @@
 import builtins
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -388,6 +389,17 @@ class TaskService:
             if task.extra.get("awaiting_edit") is True:
                 return task
         return None
+
+    async def get_task_history(
+        self, task_id: UUID, user_id: UUID | None = None
+    ) -> Sequence[TaskEvent]:
+        task = await self.get(task_id, user_id)
+        statement = (
+            select(TaskEvent)
+            .where(TaskEvent.task_id == task.id, TaskEvent.user_id == task.user_id)
+            .order_by(TaskEvent.created_at.asc())
+        )
+        return list((await self.session.scalars(statement)).all())
 
     @staticmethod
     def _check_version(task: Task, version: int | None) -> None:

@@ -7,7 +7,7 @@ the REST transport and makes all handlers testable without Telegram or an LLM.
 import asyncio
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
@@ -32,6 +32,7 @@ from app.tasks.models import (
     ProcessingStatus,
     Reminder,
     Task,
+    TaskEvent,
     TaskPriority,
     TaskStatus,
     TaskType,
@@ -596,6 +597,13 @@ class TelegramBot:
                     if isinstance(message_id, int):
                         await self.client.edit_message_text(chat_id, message_id, prompt)
                     return
+                elif action == "history":
+                    task = await service.get(task_id)
+                    events = await service.get_task_history(task_id)
+                    history_text = self._format_history(task, events, self.timezone)
+                    await self.client.answer_callback_query(callback_id, "История изменений")
+                    await self.client.send_message(chat_id, history_text)
+                    return
                 else:
                     await self.client.answer_callback_query(callback_id, "Неизвестное действие")
                     return
@@ -785,6 +793,82 @@ class TelegramBot:
             task_type = TaskType.MY_TASK
         return labels.get(task_type, str(task.task_type))
 
+    @staticmethod
+    def _status_value_label(value: object) -> str:
+        labels = {
+            TaskStatus.NEW: "Новая",
+            TaskStatus.PLANNED: "Запланирована",
+            TaskStatus.IN_PROGRESS: "В работе",
+            TaskStatus.WAITING: "Жду",
+            TaskStatus.DONE: "Выполнена",
+            TaskStatus.OVERDUE: "Просрочена",
+            TaskStatus.POSTPONED: "Отложена",
+            TaskStatus.ON_HOLD: "На паузе",
+            TaskStatus.CANCELLED: "Отменена",
+        }
+        try:
+            return labels.get(TaskStatus(str(value)), str(value))
+        except ValueError:
+            return str(value)
+
+    @classmethod
+    def _format_history(
+        cls, task: Task, events: Sequence[TaskEvent], timezone: str = "UTC"
+    ) -> str:
+        if not events:
+            return f"История изменений: {task.title}\n\nИзменений пока нет."
+        field_labels = {
+            "title": "Название",
+            "description": "Описание",
+            "due_at": "Срок",
+            "due_date": "Дата срока",
+            "due_precision": "Точность срока",
+            "priority": "Приоритет",
+            "task_type": "Тип",
+            "status": "Статус",
+        }
+        lines = [f"История изменений: {task.title}", ""]
+        for event in events:
+            timestamp = cls._format_datetime(event.created_at, timezone)
+            if event.event_type == "TASK_CREATED":
+                description = "Создана"
+            elif event.event_type == "TASK_CANCELLED":
+                description = "Статус: Отменена"
+            elif event.event_type == "STATUS_CHANGED":
+                old_status = (event.old_value or {}).get("status", "—")
+                new_status = (event.new_value or {}).get("status", "—")
+                description = (
+                    f"Статус: {cls._status_value_label(old_status)} → "
+                    f"{cls._status_value_label(new_status)}"
+                )
+            else:
+                changes: list[str] = []
+                old_values = event.old_value or {}
+                new_values = event.new_value or {}
+                for key, new_value in new_values.items():
+                    label = field_labels.get(key, key)
+                    old_value = old_values.get(key, "—")
+                    changes.append(
+                        f"{label}: {cls._format_history_value(key, old_value, timezone)} → "
+                        f"{cls._format_history_value(key, new_value, timezone)}"
+                    )
+                description = "; ".join(changes) or event.event_type
+            lines.append(f"{timestamp} — {description}")
+        return "\n".join(lines)
+
+    @classmethod
+    def _format_history_value(cls, field: str, value: object, timezone: str) -> str:
+        if value is None or value == "" or value == "—":
+            return "—"
+        if field == "status":
+            return cls._status_value_label(value)
+        if field == "due_at":
+            try:
+                return cls._format_datetime(datetime.fromisoformat(str(value)), timezone)
+            except ValueError:
+                return str(value)
+        return str(value)
+
     def _parse_due_update(self, text: str) -> TaskUpdate | None:
         value = text.strip().lower()
         zone = self._zone_info(self.timezone)
@@ -888,6 +972,7 @@ class TelegramBot:
                     {"text": "❌ Отмена", "callback_data": prefix.format(action="cancel")},
                     {"text": "🔔 Напомнить", "callback_data": prefix.format(action="remind")},
                 ],
+                [{"text": "📜 История", "callback_data": prefix.format(action="history")}],
             ]
         }
 
