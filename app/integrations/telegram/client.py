@@ -45,6 +45,7 @@ class TelegramClient:
         )
 
     async def _call(self, method: str, **params: Any) -> Any:
+        params = {key: value for key, value in params.items() if value is not None}
         response = await self._http.post(f"/{method}", json=params)
         if response.status_code == 401:
             raise TelegramAuthenticationError("Telegram bot authentication failed")
