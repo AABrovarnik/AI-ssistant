@@ -19,7 +19,7 @@
 - Реализованы `/start`, `/help`, `/new`, `/today`, `/week`, `/overdue`, `/delegated`, `/waiting`, `/search`, `/settings` и `/edit`.
 - Добавлены inline actions: complete, edit prompt, postpone, waiting, cancel, reminder.
 - Telegram unit tests используют fake client и не ходят во внешний API.
-- Full suite на PostgreSQL: `23 passed, 2 skipped`.
+- Full suite на PostgreSQL: `26 passed, 2 skipped`.
 - Ruff и mypy проходят.
 
 ## Безопасность и блокеры
@@ -38,7 +38,7 @@
 - Свободный текст Telegram показывает task candidate preview и пока не создаёт задачу в БД.
 - `TASK_COMPLETE` и `STATUS_UPDATE` получают безопасный status preview без автоматического изменения БД.
 - `INFORMATION` проходит через search parser, фильтрует задачи локально и возвращает результаты.
-- Полный Docker test suite: `23 passed, 2 skipped`; Ruff и mypy проходят.
+- Полный Docker test suite: `26 passed, 2 skipped`; Ruff и mypy проходят.
 
 ## Phase 4
 
@@ -48,7 +48,9 @@
 - «Игнорировать» помечает кандидат как `IGNORED`.
 - «Изменить» переводит кандидата в режим ожидания и обновляет его следующим сообщением.
 - «Изменить» у созданной задачи также ожидает следующий текст и обновляет задачу без показа UUID.
-- Сроки в Telegram отображаются в российском формате `ДД.ММ.ГГГГ ЧЧ:ММ`; внутренние UUID скрыты из обычных списков.
+- Карточка задачи показывает статус, срок, приоритет, тип, исполнителя и описание.
+- Кнопки позволяют отдельно изменить название, срок и статус; внутренние UUID скрыты из обычных списков.
+- Отображение и ввод сроков используют `TIMEZONE`; для текущего worker настроено `Europe/Moscow`.
 
 ## Инфраструктурное условие
 

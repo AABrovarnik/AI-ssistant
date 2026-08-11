@@ -42,8 +42,15 @@ class FakeTelegramClient:
         return None
 
 
-def make_bot(client: FakeTelegramClient, owner_user_id: int = 42) -> TelegramBot:
-    return TelegramBot(cast(TelegramClientProtocol, client), cast(Any, None), owner_user_id)
+def make_bot(
+    client: FakeTelegramClient, owner_user_id: int = 42, timezone: str = "UTC"
+) -> TelegramBot:
+    return TelegramBot(
+        cast(TelegramClientProtocol, client),
+        cast(Any, None),
+        owner_user_id,
+        timezone=timezone,
+    )
 
 
 @pytest.mark.asyncio
@@ -136,7 +143,9 @@ def test_task_keyboard_contains_phase2_actions() -> None:
     labels = [button["text"] for row in keyboard["inline_keyboard"] for button in row]
     assert labels == [
         "✅ Выполнено",
-        "✏️ Изменить",
+        "✏️ Название",
+        "📅 Срок",
+        "🔄 Статус",
         "↔ Перенести",
         "⏳ Жду",
         "❌ Отмена",
@@ -157,6 +166,31 @@ def test_task_list_uses_russian_date_format_without_internal_id() -> None:
     assert "12.08.2026 15:00" in text
     assert str(task.id) not in text
     assert "2026-08-12T15:00:00" not in text
+
+
+def test_task_card_converts_utc_to_configured_timezone() -> None:
+    task = Task(
+        id=uuid4(),
+        title="Позвонить",
+        status=TaskStatus.NEW,
+        task_type=TaskType.MY_TASK,
+        due_at=datetime(2026, 8, 12, 15, 0, tzinfo=UTC),
+    )
+
+    text = TelegramBot._format_tasks("Задача", [task], "Europe/Moscow")
+
+    assert "Срок: 12.08.2026 18:00" in text
+    assert "Статус: Новая" in text
+    assert "Тип: Моя задача" in text
+
+
+def test_due_and_status_edit_inputs_are_parsed() -> None:
+    bot = make_bot(FakeTelegramClient(), timezone="Europe/Moscow")
+    due_update = bot._parse_due_update("12.08.2026 18:00")
+
+    assert due_update is not None
+    assert due_update.due_at == datetime(2026, 8, 12, 15, 0, tzinfo=UTC)
+    assert bot._parse_status("в работе") == TaskStatus.IN_PROGRESS
 
 
 def test_candidate_uses_russian_date_format() -> None:

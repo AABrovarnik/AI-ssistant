@@ -50,7 +50,7 @@ class LLMService:
     async def classify_message(
         self, text: str, current_datetime: datetime | None = None
     ) -> ClassificationResult:
-        now = current_datetime or datetime.now(UTC)
+        now = self._current_datetime(current_datetime)
         system = self._system_prompt(CLASSIFIER_SYSTEM, ClassificationResult)
         user = "\n\n".join(
             [context_block(now, self.timezone), data_block("message", text)]
@@ -63,7 +63,7 @@ class LLMService:
     async def extract_task(
         self, text: str, current_datetime: datetime | None = None
     ) -> TaskExtractionResult:
-        now = current_datetime or datetime.now(UTC)
+        now = self._current_datetime(current_datetime)
         system = self._system_prompt(EXTRACTOR_SYSTEM, TaskExtractionResult)
         user = "\n\n".join(
             [context_block(now, self.timezone), data_block("message", text)]
@@ -79,7 +79,7 @@ class LLMService:
         existing_task: dict[str, object],
         current_datetime: datetime | None = None,
     ) -> StatusAnalysisResult:
-        now = current_datetime or datetime.now(UTC)
+        now = self._current_datetime(current_datetime)
         system = self._system_prompt(STATUS_SYSTEM, StatusAnalysisResult)
         user = "\n\n".join(
             [
@@ -93,7 +93,7 @@ class LLMService:
     async def parse_search(
         self, query: str, current_datetime: datetime | None = None
     ) -> SearchParseResult:
-        now = current_datetime or datetime.now(UTC)
+        now = self._current_datetime(current_datetime)
         system = self._system_prompt(SEARCH_SYSTEM, SearchParseResult)
         user = "\n\n".join(
             [context_block(now, self.timezone), data_block("search_query", query)]
@@ -156,3 +156,7 @@ class LLMService:
             return ZoneInfo(timezone)
         except ZoneInfoNotFoundError:
             return ZoneInfo("UTC")
+
+    def _current_datetime(self, current_datetime: datetime | None) -> datetime:
+        value = current_datetime or datetime.now(UTC)
+        return value.astimezone(self.resolve_timezone(self.timezone))

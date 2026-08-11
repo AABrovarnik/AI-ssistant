@@ -36,6 +36,7 @@ async def run() -> None:
             session_factory,
             settings.telegram_owner_user_id,
             llm_service,
+            settings.timezone,
         )
         try:
             await bot.run_polling()

@@ -82,6 +82,17 @@ async def test_invalid_json_gets_one_repair_retry() -> None:
 
 
 @pytest.mark.asyncio
+async def test_llm_context_uses_configured_timezone() -> None:
+    provider = FakeProvider(classification())
+    service = LLMService(provider, "test-model", timezone="Europe/Moscow")
+
+    await service.classify_message("Подготовить смету", datetime(2026, 8, 11, 12, tzinfo=UTC))
+
+    assert "2026-08-11T15:00:00+03:00" in provider.calls[0][1]
+    assert "Timezone: Europe/Moscow" in provider.calls[0][1]
+
+
+@pytest.mark.asyncio
 async def test_low_confidence_is_forced_to_unclear() -> None:
     provider = FakeProvider(classification(confidence=0.64))
     service = LLMService(provider, "test-model")

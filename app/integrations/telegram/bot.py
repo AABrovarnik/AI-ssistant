@@ -6,10 +6,12 @@ the REST transport and makes all handlers testable without Telegram or an LLM.
 
 import asyncio
 import logging
+import re
 from collections.abc import Mapping
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -25,7 +27,15 @@ from app.llm.schemas import (
     TaskCandidate,
 )
 from app.llm.service import LLMParseError, LLMService
-from app.tasks.models import ProcessingStatus, Reminder, Task, TaskStatus, TaskType
+from app.tasks.models import (
+    DuePrecision,
+    ProcessingStatus,
+    Reminder,
+    Task,
+    TaskPriority,
+    TaskStatus,
+    TaskType,
+)
 from app.tasks.schemas import SourceMessageCreate, TaskCreate, TaskUpdate
 from app.tasks.service import (
     InvalidTaskTransitionError,
@@ -44,11 +54,13 @@ class TelegramBot:
         session_factory: async_sessionmaker[AsyncSession],
         owner_user_id: int,
         llm_service: LLMService | None = None,
+        timezone: str = "UTC",
     ) -> None:
         self.client = client
         self.session_factory = session_factory
         self.owner_user_id = owner_user_id
         self.llm_service = llm_service
+        self.timezone = timezone
 
     async def handle_update(self, update: Mapping[str, Any]) -> None:
         message = update.get("message")
@@ -124,13 +136,17 @@ class TelegramBot:
                         tasks = await service.list(task_type=TaskType.AWAITING)
                         title = "Ожидаемые результаты"
                 await self.client.send_message(
-                    chat_id, self._format_tasks(title, tasks), self._keyboard(tasks)
+                    chat_id,
+                    self._format_tasks(title, tasks, self.timezone),
+                    self._keyboard(tasks),
                 )
         elif command == "/search":
             async with self.session_factory() as session:
                 tasks = await TaskService(session).list(query=argument.strip())
             await self.client.send_message(
-                chat_id, self._format_tasks("Результаты поиска", tasks), self._keyboard(tasks)
+                chat_id,
+                self._format_tasks("Результаты поиска", tasks, self.timezone),
+                self._keyboard(tasks),
             )
         elif command == "/settings":
             async with self.session_factory() as session:
@@ -152,28 +168,66 @@ class TelegramBot:
     ) -> None:
         message_id = str(message.get("message_id", "unknown"))
         edited_task: Task | None = None
+        edit_error: str | None = None
         async with self.session_factory() as session:
             service = TaskService(session)
             pending_task = await service.get_pending_edit_task()
             if pending_task is not None:
-                edited_task = await service.update(
-                    pending_task.id,
-                    TaskUpdate(
-                        version=pending_task.version,
-                        title=text,
-                    ),
-                    f"telegram:edit-pending:{pending_task.id}:{pending_task.version}:{message_id}",
-                )
-                edited_task.extra = {
-                    key: value
-                    for key, value in edited_task.extra.items()
-                    if key != "awaiting_edit"
-                }
-                await session.commit()
+                field = str(pending_task.extra.get("awaiting_edit_field", "title"))
+                update: TaskUpdate | None
+                status = None
+                if field == "due":
+                    update = self._parse_due_update(text)
+                    if update is None:
+                        edit_error = (
+                            "Не распознал срок. Пришли дату как 12.08.2026 18:00 "
+                            "или 12.08.2026."
+                        )
+                elif field == "status":
+                    status = self._parse_status(text)
+                    update = (
+                        TaskUpdate(version=pending_task.version, status=status)
+                        if status
+                        else None
+                    )
+                    if update is None:
+                        edit_error = (
+                            "Не распознал статус. Используй: новая, в работе, жду, "
+                            "выполнено или отменено."
+                        )
+                else:
+                    update = TaskUpdate(version=pending_task.version, title=text)
+
+                if update is not None:
+                    operation_key = (
+                        f"telegram:edit-pending:{pending_task.id}:"
+                        f"{pending_task.version}:{message_id}"
+                    )
+                    if status == TaskStatus.CANCELLED:
+                        edited_task = await service.cancel(
+                            pending_task.id,
+                            pending_task.version,
+                            operation_key,
+                        )
+                    else:
+                        edited_task = await service.update(
+                            pending_task.id,
+                            update,
+                            operation_key,
+                        )
+                    edited_task.extra = {
+                        key: value
+                        for key, value in edited_task.extra.items()
+                        if key not in {"awaiting_edit", "awaiting_edit_field"}
+                    }
+                    await session.commit()
+        if edit_error is not None:
+            await self.client.send_message(chat_id, edit_error)
+            return
         if edited_task is not None:
             await self.client.send_message(
                 chat_id,
-                self._format_tasks("Задача изменена", [edited_task]),
+                self._format_tasks("Задача изменена", [edited_task], self.timezone),
                 self._keyboard([edited_task]),
             )
             return
@@ -229,7 +283,7 @@ class TelegramBot:
                 )
             await self.client.send_message(
                 chat_id,
-                self._format_candidate(candidate),
+                self._format_candidate(candidate, self.timezone),
                 self._candidate_keyboard(source.id),
             )
             return
@@ -290,7 +344,7 @@ class TelegramBot:
         tasks = self._apply_search_filters(tasks, parsed.filters)
         await self.client.send_message(
             chat_id,
-            self._format_tasks("Результаты поиска", tasks),
+            self._format_tasks("Результаты поиска", tasks, self.timezone),
             self._keyboard(tasks),
         )
 
@@ -356,7 +410,7 @@ class TelegramBot:
         return start <= task.due_at < end
 
     @staticmethod
-    def _format_candidate(candidate: TaskCandidate) -> str:
+    def _format_candidate(candidate: TaskCandidate, timezone: str = "UTC") -> str:
         lines = [
             "Кандидат задачи",
             f"Тип: {candidate.task_type.value}",
@@ -367,15 +421,22 @@ class TelegramBot:
         if candidate.assignee_name:
             lines.append(f"Исполнитель: {candidate.assignee_name}")
         if candidate.due_at:
-            lines.append(f"Срок: {TelegramBot._format_datetime(candidate.due_at)}")
+            lines.append(f"Срок: {TelegramBot._format_datetime(candidate.due_at, timezone)}")
         elif candidate.due_date:
             lines.append(f"Срок: {TelegramBot._format_date(candidate.due_date)}")
         lines.append("\nЗадача пока не создана — выбери действие ниже.")
         return "\n".join(lines)
 
     @staticmethod
-    def _format_datetime(value: datetime) -> str:
-        return value.strftime("%d.%m.%Y %H:%M")
+    def _zone_info(timezone: str) -> ZoneInfo:
+        try:
+            return ZoneInfo(timezone)
+        except ZoneInfoNotFoundError:
+            return ZoneInfo("UTC")
+
+    @staticmethod
+    def _format_datetime(value: datetime, timezone: str = "UTC") -> str:
+        return value.astimezone(TelegramBot._zone_info(timezone)).strftime("%d.%m.%Y %H:%M")
 
     @staticmethod
     def _format_date(value: date) -> str:
@@ -413,7 +474,7 @@ class TelegramBot:
             )
         await self.client.send_message(
             chat_id,
-            f"Создано: {task.title}\nСтатус: {self._status(task)}",
+            self._format_tasks("Задача создана", [task], self.timezone),
             self._keyboard([task]),
         )
 
@@ -500,9 +561,15 @@ class TelegramBot:
                     notice = "Напоминание создано на час"
                 elif action == "edit":
                     task = await service.get(task_id)
-                    task.extra = {**task.extra, "awaiting_edit": True}
+                    task.extra = {
+                        **task.extra,
+                        "awaiting_edit": True,
+                        "awaiting_edit_field": "title",
+                    }
                     await session.commit()
-                    await self.client.answer_callback_query(callback_id, "Пришли новый текст задачи")
+                    await self.client.answer_callback_query(
+                        callback_id, "Пришли новый текст задачи"
+                    )
                     message_id = message.get("message_id")
                     if isinstance(message_id, int):
                         await self.client.edit_message_text(
@@ -510,6 +577,24 @@ class TelegramBot:
                             message_id,
                             "Пришли новый текст задачи отдельным сообщением.",
                         )
+                    return
+                elif action in {"due", "status"}:
+                    task = await service.get(task_id)
+                    task.extra = {
+                        **task.extra,
+                        "awaiting_edit": True,
+                        "awaiting_edit_field": action,
+                    }
+                    await session.commit()
+                    prompt = (
+                        "Пришли новый срок: 12.08.2026 18:00 или 12.08.2026."
+                        if action == "due"
+                        else "Пришли статус: новая, в работе, жду, выполнено или отменено."
+                    )
+                    await self.client.answer_callback_query(callback_id, prompt)
+                    message_id = message.get("message_id")
+                    if isinstance(message_id, int):
+                        await self.client.edit_message_text(chat_id, message_id, prompt)
                     return
                 else:
                     await self.client.answer_callback_query(callback_id, "Неизвестное действие")
@@ -523,7 +608,7 @@ class TelegramBot:
             await self.client.edit_message_text(
                 chat_id,
                 message_id,
-                self._format_tasks("Задача обновлена", [task]),
+                self._format_tasks("Задача обновлена", [task], self.timezone),
                 self._keyboard([task]),
             )
 
@@ -609,7 +694,7 @@ class TelegramBot:
             await self.client.edit_message_text(
                 chat_id,
                 message_id,
-                self._format_tasks("Задача создана", [task]),
+                self._format_tasks("Задача создана", [task], self.timezone),
                 self._keyboard([task]),
             )
 
@@ -632,16 +717,152 @@ class TelegramBot:
         return str(task.status).lower()
 
     @classmethod
-    def _format_tasks(cls, title: str, tasks: list[Task]) -> str:
+    def _format_tasks(cls, title: str, tasks: list[Task], timezone: str = "UTC") -> str:
         if not tasks:
             return f"{title}\n\nЗадач нет."
         lines = [title, ""]
         for index, task in enumerate(tasks, 1):
-            due = f" — до {cls._format_datetime(task.due_at)}" if task.due_at else ""
-            if task.due_at is None and task.due_date:
-                due = f" — до {cls._format_date(task.due_date)}"
-            lines.append(f"{index}. {task.title} [{cls._status(task)}]{due}")
+            lines.append(f"{index}. {task.title}")
+            lines.append(f"   Статус: {cls._status_label(task)}")
+            if task.due_at:
+                lines.append(f"   Срок: {cls._format_datetime(task.due_at, timezone)}")
+            elif task.due_date:
+                lines.append(f"   Срок: {cls._format_date(task.due_date)}")
+            else:
+                lines.append("   Срок: не указан")
+            lines.append(f"   Приоритет: {cls._priority_label(task)}")
+            lines.append(f"   Тип: {cls._type_label(task)}")
+            assignee_name = (task.extra or {}).get("assignee_name")
+            if isinstance(assignee_name, str) and assignee_name:
+                lines.append(f"   Исполнитель: {assignee_name}")
+            if task.description:
+                lines.append(f"   Описание: {task.description}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _status_label(task: Task) -> str:
+        labels = {
+            TaskStatus.NEW: "Новая",
+            TaskStatus.PLANNED: "Запланирована",
+            TaskStatus.IN_PROGRESS: "В работе",
+            TaskStatus.WAITING: "Жду",
+            TaskStatus.DONE: "Выполнена",
+            TaskStatus.OVERDUE: "Просрочена",
+            TaskStatus.POSTPONED: "Отложена",
+            TaskStatus.ON_HOLD: "На паузе",
+            TaskStatus.CANCELLED: "Отменена",
+        }
+        try:
+            status = TaskStatus(task.status)
+        except (TypeError, ValueError):
+            return str(task.status).lower()
+        return labels.get(status, str(task.status).lower())
+
+    @staticmethod
+    def _priority_label(task: Task) -> str:
+        labels = {
+            TaskPriority.P1: "P1 — критичный",
+            TaskPriority.P2: "P2 — высокий",
+            TaskPriority.P3: "P3 — обычный",
+            TaskPriority.P4: "P4 — низкий",
+        }
+        try:
+            priority = TaskPriority(task.priority)
+        except (TypeError, ValueError):
+            priority = TaskPriority.P3
+        return labels.get(priority, str(task.priority))
+
+    @staticmethod
+    def _type_label(task: Task) -> str:
+        labels = {
+            TaskType.MY_TASK: "Моя задача",
+            TaskType.DELEGATED: "Делегированная",
+            TaskType.AWAITING: "Ожидаемая",
+        }
+        try:
+            task_type = TaskType(task.task_type)
+        except (TypeError, ValueError):
+            task_type = TaskType.MY_TASK
+        return labels.get(task_type, str(task.task_type))
+
+    def _parse_due_update(self, text: str) -> TaskUpdate | None:
+        value = text.strip().lower()
+        zone = self._zone_info(self.timezone)
+        now = datetime.now(zone)
+        relative_match = re.fullmatch(
+            r"(сегодня|завтра|послезавтра)(?:\s+(\d{1,2}):(\d{2}))?", value
+        )
+        if relative_match:
+            offsets = {"сегодня": 0, "завтра": 1, "послезавтра": 2}
+            local_date = (now + timedelta(days=offsets[relative_match.group(1)])).date()
+            hour = int(relative_match.group(2) or 9)
+            minute = int(relative_match.group(3) or 0)
+            try:
+                local_datetime = datetime.combine(
+                    local_date,
+                    time(hour, minute),
+                    tzinfo=zone,
+                )
+            except ValueError:
+                return None
+            return TaskUpdate(
+                due_at=local_datetime.astimezone(UTC),
+                due_date=None,
+                due_precision=DuePrecision.EXACT,
+            )
+
+        match = re.fullmatch(
+            r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})(?:\s+(\d{1,2}):(\d{2}))?",
+            value,
+        )
+        if not match:
+            return None
+        try:
+            local_date = date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
+            if match.group(4) is None:
+                return TaskUpdate(
+                    due_at=None,
+                    due_date=local_date,
+                    due_precision=DuePrecision.DATE,
+                )
+            local_datetime = datetime.combine(
+                local_date,
+                time(int(match.group(4)), int(match.group(5))),
+                tzinfo=zone,
+            )
+        except ValueError:
+            return None
+        return TaskUpdate(
+            due_at=local_datetime.astimezone(UTC),
+            due_date=None,
+            due_precision=DuePrecision.EXACT,
+        )
+
+    @staticmethod
+    def _parse_status(text: str) -> TaskStatus | None:
+        normalized = " ".join(text.lower().replace("ё", "е").split())
+        statuses = {
+            "новая": TaskStatus.NEW,
+            "новый": TaskStatus.NEW,
+            "new": TaskStatus.NEW,
+            "запланирована": TaskStatus.PLANNED,
+            "запланировано": TaskStatus.PLANNED,
+            "planned": TaskStatus.PLANNED,
+            "в работе": TaskStatus.IN_PROGRESS,
+            "работа": TaskStatus.IN_PROGRESS,
+            "in progress": TaskStatus.IN_PROGRESS,
+            "жду": TaskStatus.WAITING,
+            "ожидание": TaskStatus.WAITING,
+            "waiting": TaskStatus.WAITING,
+            "выполнено": TaskStatus.DONE,
+            "выполнена": TaskStatus.DONE,
+            "готово": TaskStatus.DONE,
+            "done": TaskStatus.DONE,
+            "отменено": TaskStatus.CANCELLED,
+            "отмена": TaskStatus.CANCELLED,
+            "cancelled": TaskStatus.CANCELLED,
+        }
+        return statuses.get(normalized)
 
     @staticmethod
     def _keyboard(tasks: list[Task]) -> dict[str, Any] | None:
@@ -653,7 +874,11 @@ class TelegramBot:
             "inline_keyboard": [
                 [
                     {"text": "✅ Выполнено", "callback_data": prefix.format(action="done")},
-                    {"text": "✏️ Изменить", "callback_data": prefix.format(action="edit")},
+                    {"text": "✏️ Название", "callback_data": prefix.format(action="edit")},
+                ],
+                [
+                    {"text": "📅 Срок", "callback_data": prefix.format(action="due")},
+                    {"text": "🔄 Статус", "callback_data": prefix.format(action="status")},
                 ],
                 [
                     {"text": "↔ Перенести", "callback_data": prefix.format(action="postpone")},
