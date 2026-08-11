@@ -55,8 +55,13 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.IN_PROGRESS,
         TaskStatus.WAITING,
         TaskStatus.DONE,
+        TaskStatus.POSTPONED,
     },
-    TaskStatus.PLANNED: {TaskStatus.IN_PROGRESS, TaskStatus.WAITING},
+    TaskStatus.PLANNED: {
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.WAITING,
+        TaskStatus.POSTPONED,
+    },
     TaskStatus.IN_PROGRESS: {
         TaskStatus.WAITING,
         TaskStatus.DONE,

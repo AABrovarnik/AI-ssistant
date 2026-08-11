@@ -50,6 +50,15 @@ async def test_phase1_transitions_locking_overdue_and_soft_cancel() -> None:
         assert task.status == TaskStatus.NEW
         assert task.version == 1
 
+        task = await service.postpone(
+            task.id,
+            datetime.now(UTC) + timedelta(days=1),
+            task.version,
+            f"phase1-postpone-new-{uuid4()}",
+        )
+        assert task.status == TaskStatus.POSTPONED
+        assert task.version == 2
+
         with pytest.raises(VersionConflictError):
             await service.update(
                 task.id,
@@ -59,23 +68,28 @@ async def test_phase1_transitions_locking_overdue_and_soft_cancel() -> None:
 
         task = await service.update(
             task.id,
-            TaskUpdate(version=1, status=TaskStatus.IN_PROGRESS),
+            TaskUpdate(version=2, status=TaskStatus.IN_PROGRESS),
             f"phase1-progress-{uuid4()}",
         )
         task = await service.update(
             task.id,
-            TaskUpdate(version=2, status=TaskStatus.WAITING),
+            TaskUpdate(version=3, status=TaskStatus.WAITING),
             f"phase1-waiting-{uuid4()}",
         )
-        assert task.version == 3
+        assert task.version == 4
 
         with pytest.raises(InvalidTaskTransitionError):
             await service.update(
                 task.id,
-                TaskUpdate(version=3, status=TaskStatus.NEW),
+                TaskUpdate(version=4, status=TaskStatus.NEW),
                 f"phase1-invalid-{uuid4()}",
             )
 
+        task = await service.update(
+            task.id,
+            TaskUpdate(version=4, due_at=datetime.now(UTC) - timedelta(hours=1)),
+            f"phase1-overdue-{uuid4()}",
+        )
         overdue = await service.list_overdue(user_id)
         assert any(item.id == task.id for item in overdue)
 
