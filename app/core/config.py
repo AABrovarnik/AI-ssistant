@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     llm_provider: str = "openclaw"
     openclaw_base_url: str = "http://127.0.0.1:18789"
     openclaw_api_key: str | None = Field(default=None, repr=False)
-    llm_model: str = "openai/gpt-5.6-luna"
+    llm_model: str = "openclaw/default"
     llm_temperature: float = 0.1
     llm_timeout_seconds: int = 60
 

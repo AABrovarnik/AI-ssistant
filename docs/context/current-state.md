@@ -42,13 +42,16 @@
 
 ## Инфраструктурное условие
 
-- OpenClaw должен иметь включённый `gateway.http.endpoints.chatCompletions.enabled`.
-- `OPENCLAW_BASE_URL` должен быть адресом, доступным из worker-контейнера; `127.0.0.1` внутри контейнера указывает на сам worker.
-- Если у Gateway включена token/password auth, заполнить `OPENCLAW_API_KEY`.
-- До выполнения этих условий команды `/start`, `/help`, `/new` и inline actions продолжают работать, а свободный текст получает безопасное сообщение об ошибке parser.
+- OpenClaw `gateway.http.endpoints.chatCompletions.enabled` включён.
+- Gateway привязан к `172.18.0.1` — Docker bridge проекта, не к wildcard-интерфейсам.
+- UFW разрешает только `172.18.0.0/16 -> 172.18.0.1:18789/tcp`.
+- Worker получает `OPENCLAW_API_KEY` runtime-only из Gateway token; token не записан в Git.
+- Authenticated `/v1/models` из worker отвечает `200`; реальный parser smoke test прошёл.
+- При пересоздании worker нужно снова передавать token через окружение, если он не добавлен вручную в локальный `.env`.
 
 ## Следующие шаги
 
-1. Включить и подключить OpenClaw endpoint к worker-сети.
-2. Проверить в Telegram: `Завтра до 15:00 подготовить смету` и `Сергей должен до пятницы прислать расчёт`.
-3. Перейти к Phase 4 — confirmation UX с кнопками «Создать / Изменить / Игнорировать».
+1. Проверить в Telegram: `Завтра до 15:00 подготовить смету` и `Сергей должен до пятницы прислать расчёт`.
+2. Проверить status preview: `Иван прислал договор`.
+3. Проверить natural-language search: `Что мне должен Иван?`.
+4. Перейти к Phase 4 — confirmation UX с кнопками «Создать / Изменить / Игнорировать».

@@ -49,6 +49,8 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ai_secretary}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-ai_secretary}
+      OPENCLAW_BASE_URL: ${OPENCLAW_BASE_URL:-http://127.0.0.1:18789}
+      OPENCLAW_API_KEY: ${OPENCLAW_API_KEY:-}
     depends_on:
       db:
         condition: service_healthy
