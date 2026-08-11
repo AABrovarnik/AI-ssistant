@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tasks.models import (
     Contact,
+    ProcessingStatus,
     SourceMessage,
     Task,
     TaskEvent,
@@ -326,6 +327,35 @@ class TaskService:
         except IntegrityError as exc:
             await self.session.rollback()
             raise DuplicateSourceError(data.external_id) from exc
+        await self.session.refresh(source)
+        return source
+
+    async def get_source_message(
+        self, source_id: UUID, user_id: UUID | None = None
+    ) -> SourceMessage:
+        statement = select(SourceMessage).where(SourceMessage.id == source_id)
+        if user_id is not None:
+            user = await self.ensure_user(user_id)
+            statement = statement.where(SourceMessage.user_id == user.id)
+        source = await self.session.scalar(statement)
+        if source is None:
+            raise TaskNotFoundError(source_id)
+        return source
+
+    async def save_source_candidate(
+        self,
+        source_id: UUID,
+        classification: str,
+        confidence: float,
+        candidate: dict[str, object],
+        user_id: UUID | None = None,
+    ) -> SourceMessage:
+        source = await self.get_source_message(source_id, user_id)
+        source.processing_status = ProcessingStatus.PROCESSED
+        source.classification = classification
+        source.confidence = confidence
+        source.extra = {"candidate": candidate}
+        await self.session.commit()
         await self.session.refresh(source)
         return source
 

@@ -25,8 +25,8 @@ from app.llm.schemas import (
     TaskCandidate,
 )
 from app.llm.service import LLMParseError, LLMService
-from app.tasks.models import Reminder, Task, TaskStatus, TaskType
-from app.tasks.schemas import TaskCreate, TaskUpdate
+from app.tasks.models import ProcessingStatus, Reminder, Task, TaskStatus, TaskType
+from app.tasks.schemas import SourceMessageCreate, TaskCreate, TaskUpdate
 from app.tasks.service import (
     InvalidTaskTransitionError,
     TaskNotFoundError,
@@ -143,11 +143,13 @@ class TelegramBot:
         elif command == "/edit":
             await self._edit_task(chat_id, argument)
         elif not command.startswith("/"):
-            await self._handle_natural_language(chat_id, text)
+            await self._handle_natural_language(chat_id, text, message)
         else:
             await self.client.send_message(chat_id, "Неизвестная команда. Используй /help.")
 
-    async def _handle_natural_language(self, chat_id: int, text: str) -> None:
+    async def _handle_natural_language(
+        self, chat_id: int, text: str, message: Mapping[str, Any]
+    ) -> None:
         if self.llm_service is None:
             await self.client.send_message(
                 chat_id,
@@ -168,7 +170,35 @@ class TelegramBot:
         classification = parsed.classification
         candidate = parsed.extraction.candidate if parsed.extraction else None
         if candidate is not None and classification.classification != MessageClassification.UNCLEAR:
-            await self.client.send_message(chat_id, self._format_candidate(candidate))
+            message_id = str(message.get("message_id", "unknown"))
+            sender = message.get("from") or {}
+            sender_name = (
+                str(sender.get("username") or sender.get("first_name") or "owner")
+                if isinstance(sender, Mapping)
+                else "owner"
+            )
+            async with self.session_factory() as session:
+                service = TaskService(session)
+                source = await service.create_source_message(
+                    SourceMessageCreate(
+                        source_type="TELEGRAM",
+                        external_id=f"{self.owner_user_id}:{message_id}",
+                        sender_external_id=str(self.owner_user_id),
+                        sender_name=sender_name,
+                        text=text,
+                    )
+                )
+                source = await service.save_source_candidate(
+                    source.id,
+                    classification.classification.value,
+                    classification.confidence,
+                    candidate.model_dump(mode="json"),
+                )
+            await self.client.send_message(
+                chat_id,
+                self._format_candidate(candidate),
+                self._candidate_keyboard(source.id),
+            )
             return
         if classification.classification in {
             MessageClassification.TASK_COMPLETE,
@@ -307,8 +337,21 @@ class TelegramBot:
             lines.append(f"Срок: {candidate.due_at.isoformat()}")
         elif candidate.due_date:
             lines.append(f"Срок: {candidate.due_date.isoformat()}")
-        lines.append("\nЗадача пока не создана — подтверждение добавим на Phase 4.")
+        lines.append("\nЗадача пока не создана — выбери действие ниже.")
         return "\n".join(lines)
+
+    @staticmethod
+    def _candidate_keyboard(source_id: UUID) -> dict[str, Any]:
+        prefix = f"candidate:{{action}}:{source_id}"
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Создать", "callback_data": prefix.format(action="create")},
+                    {"text": "✏️ Изменить", "callback_data": prefix.format(action="edit")},
+                    {"text": "❌ Игнорировать", "callback_data": prefix.format(action="ignore")},
+                ]
+            ]
+        }
 
     async def _new_task(
         self, chat_id: int, title: str, message: Mapping[str, Any]
@@ -363,6 +406,9 @@ class TelegramBot:
         message = callback.get("message") or {}
         chat_id = self._chat_id(message)
         parts = data.split(":")
+        if len(parts) == 3 and parts[0] == "candidate":
+            await self._handle_candidate_callback(callback, parts[1], parts[2])
+            return
         if len(parts) != 4 or parts[0] != "task":
             await self.client.answer_callback_query(callback_id, "Неизвестное действие")
             return
@@ -430,6 +476,83 @@ class TelegramBot:
                 chat_id,
                 message_id,
                 self._format_tasks("Задача обновлена", [task]),
+                self._keyboard([task]),
+            )
+
+    async def _handle_candidate_callback(
+        self, callback: Mapping[str, Any], action: str, source_id_text: str
+    ) -> None:
+        callback_id = str(callback.get("id", ""))
+        message = callback.get("message") or {}
+        chat_id = self._chat_id(message)
+        try:
+            source_id = UUID(source_id_text)
+        except ValueError:
+            await self.client.answer_callback_query(callback_id, "Некорректный кандидат")
+            return
+        try:
+            async with self.session_factory() as session:
+                service = TaskService(session)
+                source = await service.get_source_message(source_id)
+                if action == "ignore":
+                    source.processing_status = ProcessingStatus.IGNORED
+                    await session.commit()
+                    notice = "Кандидат проигнорирован"
+                    task = None
+                elif action == "edit":
+                    await self.client.answer_callback_query(
+                        callback_id,
+                        "Отправь исправленный вариант отдельным сообщением",
+                    )
+                    return
+                elif action == "create":
+                    raw_candidate = source.extra.get("candidate")
+                    if not isinstance(raw_candidate, dict):
+                        raise ValueError("candidate data is missing")
+                    candidate = TaskCandidate.model_validate(raw_candidate)
+                    task = await service.create(
+                        TaskCreate(
+                            title=candidate.title,
+                            description=candidate.description,
+                            task_type=candidate.task_type,
+                            priority=candidate.priority,
+                            due_at=candidate.due_at,
+                            due_date=candidate.due_date,
+                            due_precision=candidate.due_precision,
+                            source_type=source.source_type,
+                            source_id=source.external_id,
+                            source_message_id=source.id,
+                            confidence=candidate.confidence,
+                            user_id=source.user_id,
+                            source="telegram_llm",
+                            idempotency_key=f"telegram:candidate:create:{source.id}",
+                            extra={
+                                "assignee_name": candidate.assignee_name,
+                                "evidence": candidate.evidence,
+                            },
+                        )
+                    )
+                    source.extra = {**source.extra, "confirmed": True}
+                    await session.commit()
+                    notice = "Задача создана"
+                else:
+                    await self.client.answer_callback_query(callback_id, "Неизвестное действие")
+                    return
+        except (TaskNotFoundError, ValueError) as exc:
+            await self.client.answer_callback_query(callback_id, f"Не выполнено: {exc}")
+            return
+
+        await self.client.answer_callback_query(callback_id, notice)
+        message_id = message.get("message_id")
+        if not isinstance(message_id, int):
+            return
+        if task is None:
+            await self.client.edit_message_text(chat_id, message_id, "Кандидат проигнорирован")
+        else:
+            await self.client.edit_message_text(
+                chat_id,
+                message_id,
+                self._format_tasks("Задача создана", [task]),
                 self._keyboard([task]),
             )
 

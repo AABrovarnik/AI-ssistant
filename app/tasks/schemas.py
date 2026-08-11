@@ -26,6 +26,7 @@ class TaskCreate(BaseModel):
     user_id: UUID | None = None
     source: str = Field(default="api", min_length=1, max_length=100)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=255)
+    extra: dict[str, object] = Field(default_factory=dict)
 
 
 class TaskUpdate(BaseModel):

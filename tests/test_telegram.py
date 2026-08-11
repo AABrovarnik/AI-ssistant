@@ -142,3 +142,15 @@ def test_task_keyboard_contains_phase2_actions() -> None:
         "❌ Отмена",
         "🔔 Напомнить",
     ]
+
+
+def test_candidate_keyboard_contains_confirmation_actions() -> None:
+    keyboard = TelegramBot._candidate_keyboard(uuid4())
+    labels = [button["text"] for row in keyboard["inline_keyboard"] for button in row]
+
+    assert labels == ["✅ Создать", "✏️ Изменить", "❌ Игнорировать"]
+    assert all(
+        button["callback_data"].startswith("candidate:")
+        for row in keyboard["inline_keyboard"]
+        for button in row
+    )
