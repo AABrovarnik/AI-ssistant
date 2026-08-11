@@ -179,15 +179,21 @@ class TelegramBot:
             )
             async with self.session_factory() as session:
                 service = TaskService(session)
-                source = await service.create_source_message(
-                    SourceMessageCreate(
-                        source_type="TELEGRAM",
-                        external_id=f"{self.owner_user_id}:{message_id}",
-                        sender_external_id=str(self.owner_user_id),
-                        sender_name=sender_name,
-                        text=text,
+                source = await service.get_pending_candidate()
+                if source is None:
+                    source = await service.create_source_message(
+                        SourceMessageCreate(
+                            source_type="TELEGRAM",
+                            external_id=f"{self.owner_user_id}:{message_id}",
+                            sender_external_id=str(self.owner_user_id),
+                            sender_name=sender_name,
+                            text=text,
+                        )
                     )
-                )
+                else:
+                    source.text = text
+                    source.sender_name = sender_name
+                    await session.flush()
                 source = await service.save_source_candidate(
                     source.id,
                     classification.classification.value,
@@ -508,10 +514,19 @@ class TelegramBot:
                     notice = "Кандидат проигнорирован"
                     task = None
                 elif action == "edit":
+                    source.extra = {**source.extra, "awaiting_edit": True}
+                    await session.commit()
                     await self.client.answer_callback_query(
                         callback_id,
                         "Отправь исправленный вариант отдельным сообщением",
                     )
+                    message_id = message.get("message_id")
+                    if isinstance(message_id, int):
+                        await self.client.edit_message_text(
+                            chat_id,
+                            message_id,
+                            "Пришли исправленный вариант задачи отдельным сообщением.",
+                        )
                     return
                 elif action == "create":
                     raw_candidate = source.extra.get("candidate")

@@ -159,3 +159,40 @@ async def test_phase1_source_duplicate_prevention_and_linking() -> None:
         await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
         await session.execute(delete(User).where(User.id == user_id))
         await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_phase4_pending_candidate_is_reused_for_edit() -> None:
+    if not _postgres_enabled():
+        pytest.skip("requires PostgreSQL")
+
+    user_id = uuid4()
+    async with session_factory() as session:
+        service = TaskService(session)
+        source = await service.create_source_message(
+            SourceMessageCreate(
+                source_type="TELEGRAM",
+                external_id=f"edit-{uuid4()}",
+                text="старый текст",
+            ),
+            user_id,
+        )
+        source = await service.save_source_candidate(
+            source.id,
+            "TASK",
+            0.9,
+            {"title": "старый текст", "awaiting_edit": True},
+            user_id,
+        )
+        source.extra = {**source.extra, "awaiting_edit": True}
+        await session.commit()
+
+        pending = await service.get_pending_candidate(user_id)
+
+        assert pending is not None
+        assert pending.id == source.id
+
+        await session.delete(source)
+        await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
+        await session.execute(delete(User).where(User.id == user_id))
+        await session.commit()

@@ -359,6 +359,23 @@ class TaskService:
         await self.session.refresh(source)
         return source
 
+    async def get_pending_candidate(self, user_id: UUID | None = None) -> SourceMessage | None:
+        user = await self.ensure_user(user_id)
+        statement = (
+            select(SourceMessage)
+            .where(
+                SourceMessage.user_id == user.id,
+                SourceMessage.source_type == "TELEGRAM",
+                SourceMessage.processing_status == ProcessingStatus.PROCESSED,
+            )
+            .order_by(SourceMessage.created_at.desc())
+            .limit(20)
+        )
+        for source in (await self.session.scalars(statement)).all():
+            if source.extra.get("awaiting_edit") is True:
+                return source
+        return None
+
     @staticmethod
     def _check_version(task: Task, version: int | None) -> None:
         if version is not None and task.version != version:
