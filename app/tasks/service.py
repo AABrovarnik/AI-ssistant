@@ -376,6 +376,19 @@ class TaskService:
                 return source
         return None
 
+    async def get_pending_edit_task(self, user_id: UUID | None = None) -> Task | None:
+        user = await self.ensure_user(user_id)
+        statement = (
+            select(Task)
+            .where(Task.user_id == user.id, Task.deleted_at.is_(None))
+            .order_by(Task.updated_at.desc())
+            .limit(20)
+        )
+        for task in (await self.session.scalars(statement)).all():
+            if task.extra.get("awaiting_edit") is True:
+                return task
+        return None
+
     @staticmethod
     def _check_version(task: Task, version: int | None) -> None:
         if version is not None and task.version != version:

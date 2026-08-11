@@ -196,3 +196,33 @@ async def test_phase4_pending_candidate_is_reused_for_edit() -> None:
         await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
         await session.execute(delete(User).where(User.id == user_id))
         await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_phase4_pending_task_is_reused_for_edit() -> None:
+    if not _postgres_enabled():
+        pytest.skip("requires PostgreSQL")
+
+    user_id = uuid4()
+    async with session_factory() as session:
+        service = TaskService(session)
+        task = await service.create(
+            TaskCreate(
+                user_id=user_id,
+                title="старый заголовок",
+                idempotency_key=f"edit-task-{uuid4()}",
+            )
+        )
+        task.extra = {"awaiting_edit": True}
+        await session.commit()
+
+        pending = await service.get_pending_edit_task(user_id)
+
+        assert pending is not None
+        assert pending.id == task.id
+
+        await session.execute(delete(TaskEvent).where(TaskEvent.task_id == task.id))
+        await session.delete(task)
+        await session.execute(delete(UserSettings).where(UserSettings.user_id == user_id))
+        await session.execute(delete(User).where(User.id == user_id))
+        await session.commit()

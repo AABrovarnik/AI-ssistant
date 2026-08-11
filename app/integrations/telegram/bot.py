@@ -150,6 +150,33 @@ class TelegramBot:
     async def _handle_natural_language(
         self, chat_id: int, text: str, message: Mapping[str, Any]
     ) -> None:
+        message_id = str(message.get("message_id", "unknown"))
+        edited_task: Task | None = None
+        async with self.session_factory() as session:
+            service = TaskService(session)
+            pending_task = await service.get_pending_edit_task()
+            if pending_task is not None:
+                edited_task = await service.update(
+                    pending_task.id,
+                    TaskUpdate(
+                        version=pending_task.version,
+                        title=text,
+                    ),
+                    f"telegram:edit-pending:{pending_task.id}:{pending_task.version}:{message_id}",
+                )
+                edited_task.extra = {
+                    key: value
+                    for key, value in edited_task.extra.items()
+                    if key != "awaiting_edit"
+                }
+                await session.commit()
+        if edited_task is not None:
+            await self.client.send_message(
+                chat_id,
+                self._format_tasks("Задача изменена", [edited_task]),
+                self._keyboard([edited_task]),
+            )
+            return
         if self.llm_service is None:
             await self.client.send_message(
                 chat_id,
@@ -472,10 +499,17 @@ class TelegramBot:
                     await session.commit()
                     notice = "Напоминание создано на час"
                 elif action == "edit":
-                    await self.client.answer_callback_query(
-                        callback_id,
-                        f"Используй /edit {task_id} новый текст",
-                    )
+                    task = await service.get(task_id)
+                    task.extra = {**task.extra, "awaiting_edit": True}
+                    await session.commit()
+                    await self.client.answer_callback_query(callback_id, "Пришли новый текст задачи")
+                    message_id = message.get("message_id")
+                    if isinstance(message_id, int):
+                        await self.client.edit_message_text(
+                            chat_id,
+                            message_id,
+                            "Пришли новый текст задачи отдельным сообщением.",
+                        )
                     return
                 else:
                     await self.client.answer_callback_query(callback_id, "Неизвестное действие")
