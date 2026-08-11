@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from app.integrations.telegram.bot import TelegramBot
 from app.integrations.telegram.client import TelegramClientProtocol
-from app.llm.schemas import MessageClassification, SearchDateFilter, SearchFilters
+from app.llm.schemas import MessageClassification, SearchDateFilter, SearchFilters, TaskCandidate
 from app.tasks.models import Task, TaskStatus, TaskType
 
 
@@ -142,6 +142,34 @@ def test_task_keyboard_contains_phase2_actions() -> None:
         "❌ Отмена",
         "🔔 Напомнить",
     ]
+
+
+def test_task_list_uses_russian_date_format_without_internal_id() -> None:
+    task = Task(
+        id=uuid4(),
+        title="Подготовить смету",
+        status=TaskStatus.NEW,
+        due_at=datetime(2026, 8, 12, 15, 0, tzinfo=UTC),
+    )
+
+    text = TelegramBot._format_tasks("Задачи", [task])
+
+    assert "12.08.2026 15:00" in text
+    assert str(task.id) not in text
+    assert "2026-08-12T15:00:00" not in text
+
+
+def test_candidate_uses_russian_date_format() -> None:
+    candidate = TaskCandidate(
+        task_type=TaskType.MY_TASK,
+        title="Подготовить смету",
+        due_at=datetime(2026, 8, 12, 15, 0, tzinfo=UTC),
+        confidence=0.99,
+    )
+
+    text = TelegramBot._format_candidate(candidate)
+
+    assert "Срок: 12.08.2026 15:00" in text
 
 
 def test_candidate_keyboard_contains_confirmation_actions() -> None:

@@ -7,7 +7,7 @@ the REST transport and makes all handlers testable without Telegram or an LLM.
 import asyncio
 import logging
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -334,11 +334,19 @@ class TelegramBot:
         if candidate.assignee_name:
             lines.append(f"Исполнитель: {candidate.assignee_name}")
         if candidate.due_at:
-            lines.append(f"Срок: {candidate.due_at.isoformat()}")
+            lines.append(f"Срок: {TelegramBot._format_datetime(candidate.due_at)}")
         elif candidate.due_date:
-            lines.append(f"Срок: {candidate.due_date.isoformat()}")
+            lines.append(f"Срок: {TelegramBot._format_date(candidate.due_date)}")
         lines.append("\nЗадача пока не создана — выбери действие ниже.")
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_datetime(value: datetime) -> str:
+        return value.strftime("%d.%m.%Y %H:%M")
+
+    @staticmethod
+    def _format_date(value: date) -> str:
+        return value.strftime("%d.%m.%Y")
 
     @staticmethod
     def _candidate_keyboard(source_id: UUID) -> dict[str, Any]:
@@ -580,9 +588,10 @@ class TelegramBot:
             return f"{title}\n\nЗадач нет."
         lines = [title, ""]
         for index, task in enumerate(tasks, 1):
-            due = f" — до {task.due_at.isoformat()}" if task.due_at else ""
+            due = f" — до {cls._format_datetime(task.due_at)}" if task.due_at else ""
+            if task.due_at is None and task.due_date:
+                due = f" — до {cls._format_date(task.due_date)}"
             lines.append(f"{index}. {task.title} [{cls._status(task)}]{due}")
-            lines.append(f"   id: {task.id}")
         return "\n".join(lines)
 
     @staticmethod
