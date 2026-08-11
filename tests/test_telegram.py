@@ -1,11 +1,13 @@
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
 
 import pytest
 from app.integrations.telegram.bot import TelegramBot
 from app.integrations.telegram.client import TelegramClientProtocol
-from app.tasks.models import Task
+from app.llm.schemas import MessageClassification, SearchDateFilter, SearchFilters
+from app.tasks.models import Task, TaskStatus, TaskType
 
 
 class FakeTelegramClient:
@@ -82,6 +84,49 @@ async def test_non_owner_is_ignored_and_callback_is_rejected() -> None:
 
     assert client.messages == []
     assert client.callbacks == [("callback-1", "Доступ запрещён")]
+
+
+@pytest.mark.asyncio
+async def test_status_message_gets_safe_preview_without_mutating_tasks() -> None:
+    client = FakeTelegramClient()
+    bot = make_bot(client)
+
+    await bot._handle_status_message(
+        100,
+        "Иван прислал договор",
+        MessageClassification.TASK_COMPLETE,
+    )
+
+    assert "TASK_COMPLETE" in client.messages[0][1]
+    assert "Задачи пока не изменены" in client.messages[0][1]
+
+
+def test_natural_language_search_filters_tasks() -> None:
+    tasks = [
+        Task(
+            title="Получить расчёт от Ивана",
+            task_type=TaskType.DELEGATED,
+            status=TaskStatus.NEW,
+            due_at=datetime.now(UTC) + timedelta(days=1),
+        ),
+        Task(
+            title="Позвонить Сергею",
+            task_type=TaskType.MY_TASK,
+            status=TaskStatus.NEW,
+            due_at=datetime.now(UTC) + timedelta(days=1),
+        ),
+    ]
+
+    result = TelegramBot._apply_search_filters(
+        tasks,
+        SearchFilters(
+            task_type=[TaskType.DELEGATED],
+            assignee_name="Иван",
+            date_filter=SearchDateFilter.TOMORROW,
+        ),
+    )
+
+    assert [task.title for task in result] == ["Получить расчёт от Ивана"]
 
 
 def test_task_keyboard_contains_phase2_actions() -> None:

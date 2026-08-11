@@ -18,7 +18,12 @@ from app.integrations.telegram.client import (
     TelegramClientProtocol,
 )
 from app.llm.provider import LLMProviderError
-from app.llm.schemas import MessageClassification, TaskCandidate
+from app.llm.schemas import (
+    MessageClassification,
+    SearchDateFilter,
+    SearchFilters,
+    TaskCandidate,
+)
 from app.llm.service import LLMParseError, LLMService
 from app.tasks.models import Reminder, Task, TaskStatus, TaskType
 from app.tasks.schemas import TaskCreate, TaskUpdate
@@ -165,6 +170,15 @@ class TelegramBot:
         if candidate is not None and classification.classification != MessageClassification.UNCLEAR:
             await self.client.send_message(chat_id, self._format_candidate(candidate))
             return
+        if classification.classification in {
+            MessageClassification.TASK_COMPLETE,
+            MessageClassification.STATUS_UPDATE,
+        }:
+            await self._handle_status_message(chat_id, text, classification.classification)
+            return
+        if classification.classification == MessageClassification.INFORMATION:
+            await self._handle_search_message(chat_id, text)
+            return
         if classification.classification == MessageClassification.UNCLEAR:
             await self.client.send_message(
                 chat_id,
@@ -177,6 +191,106 @@ class TelegramBot:
             f"Сообщение распознано как {classification.classification.value.lower()}, "
             "но подходящий сценарий ещё не подключён.",
         )
+
+    async def _handle_status_message(
+        self, chat_id: int, text: str, classification: MessageClassification
+    ) -> None:
+        action = (
+            "завершить связанную задачу"
+            if classification == MessageClassification.TASK_COMPLETE
+            else "обновить статус или срок связанной задачи"
+        )
+        await self.client.send_message(
+            chat_id,
+            "Статусное сообщение распознано\n"
+            f"Событие: {classification.value}\n"
+            f"Предлагаемое действие: {action}\n"
+            f"Источник: {text}\n\n"
+            "Задачи пока не изменены автоматически. На Phase 4 добавим выбор "
+            "связанной задачи и подтверждение.",
+        )
+
+    async def _handle_search_message(self, chat_id: int, text: str) -> None:
+        if self.llm_service is None:
+            return
+        try:
+            parsed = await self.llm_service.parse_search(text)
+        except (LLMParseError, LLMProviderError):
+            logger.exception("telegram_llm_search_parse_failed")
+            await self.client.send_message(
+                chat_id,
+                "Не удалось разобрать поисковый запрос. Попробуй уточнить имя или срок.",
+            )
+            return
+        async with self.session_factory() as session:
+            tasks = await TaskService(session).list(limit=100)
+        tasks = self._apply_search_filters(tasks, parsed.filters)
+        await self.client.send_message(
+            chat_id,
+            self._format_tasks("Результаты поиска", tasks),
+            self._keyboard(tasks),
+        )
+
+    @classmethod
+    def _apply_search_filters(cls, tasks: list[Task], filters: SearchFilters) -> list[Task]:
+        filtered: list[Task] = []
+        now = datetime.now(UTC)
+        for task in tasks:
+            task_type = TaskType(task.task_type)
+            status = TaskStatus(task.status)
+            priority = str(task.priority)
+            if filters.task_type and task_type not in filters.task_type:
+                continue
+            if filters.status and status not in filters.status:
+                continue
+            if filters.exclude_status and status in filters.exclude_status:
+                continue
+            if filters.priority and priority not in {item.value for item in filters.priority}:
+                continue
+            searchable = f"{task.title} {task.description or ''}".casefold()
+            if filters.assignee_name and filters.assignee_name.casefold() not in searchable:
+                continue
+            if filters.text_query and filters.text_query.casefold() not in searchable:
+                continue
+            if not cls._matches_date_filter(task, filters.date_filter, now):
+                continue
+            if filters.overdue_days_min is not None:
+                overdue_cutoff = now - timedelta(days=filters.overdue_days_min)
+                if task.due_at is None or task.due_at > overdue_cutoff:
+                    continue
+            filtered.append(task)
+
+        if filters.sort == "DUE_ASC":
+            filtered.sort(key=lambda item: item.due_at or datetime.max.replace(tzinfo=UTC))
+        elif filters.sort == "DUE_DESC":
+            filtered.sort(
+                key=lambda item: item.due_at or datetime.min.replace(tzinfo=UTC),
+                reverse=True,
+            )
+        return filtered[: filters.limit]
+
+    @staticmethod
+    def _matches_date_filter(task: Task, date_filter: SearchDateFilter, now: datetime) -> bool:
+        if date_filter == SearchDateFilter.NONE:
+            return True
+        if task.due_at is None:
+            return False
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if date_filter == SearchDateFilter.TODAY:
+            end = start + timedelta(days=1)
+        elif date_filter == SearchDateFilter.TOMORROW:
+            start += timedelta(days=1)
+            end = start + timedelta(days=1)
+        elif date_filter == SearchDateFilter.THIS_WEEK:
+            end = start + timedelta(days=7)
+        elif date_filter == SearchDateFilter.NEXT_WEEK:
+            start += timedelta(days=7)
+            end = start + timedelta(days=7)
+        else:
+            next_month = (start.month % 12) + 1
+            year = start.year + (1 if start.month == 12 else 0)
+            end = start.replace(year=year, month=next_month, day=1)
+        return start <= task.due_at < end
 
     @staticmethod
     def _format_candidate(candidate: TaskCandidate) -> str:

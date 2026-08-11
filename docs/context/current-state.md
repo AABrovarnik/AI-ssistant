@@ -36,7 +36,9 @@
 - Ответы валидируются Pydantic; предусмотрен ровно один repair retry.
 - Confidence ниже `0.65` принудительно переводит классификацию в `UNCLEAR`.
 - Свободный текст Telegram показывает task candidate preview и пока не создаёт задачу в БД.
-- Полный Docker test suite: `16 passed, 2 skipped`; Ruff и mypy проходят.
+- `TASK_COMPLETE` и `STATUS_UPDATE` получают безопасный status preview без автоматического изменения БД.
+- `INFORMATION` проходит через search parser, фильтрует задачи локально и возвращает результаты.
+- Полный Docker test suite: `18 passed, 2 skipped`; Ruff и mypy проходят.
 
 ## Инфраструктурное условие
 
