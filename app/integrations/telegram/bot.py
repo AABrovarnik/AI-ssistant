@@ -17,6 +17,9 @@ from app.integrations.telegram.client import (
     TelegramAuthenticationError,
     TelegramClientProtocol,
 )
+from app.llm.provider import LLMProviderError
+from app.llm.schemas import MessageClassification, TaskCandidate
+from app.llm.service import LLMParseError, LLMService
 from app.tasks.models import Reminder, Task, TaskStatus, TaskType
 from app.tasks.schemas import TaskCreate, TaskUpdate
 from app.tasks.service import (
@@ -35,10 +38,12 @@ class TelegramBot:
         client: TelegramClientProtocol,
         session_factory: async_sessionmaker[AsyncSession],
         owner_user_id: int,
+        llm_service: LLMService | None = None,
     ) -> None:
         self.client = client
         self.session_factory = session_factory
         self.owner_user_id = owner_user_id
+        self.llm_service = llm_service
 
     async def handle_update(self, update: Mapping[str, Any]) -> None:
         message = update.get("message")
@@ -132,8 +137,64 @@ class TelegramBot:
             )
         elif command == "/edit":
             await self._edit_task(chat_id, argument)
+        elif not command.startswith("/"):
+            await self._handle_natural_language(chat_id, text)
         else:
             await self.client.send_message(chat_id, "Неизвестная команда. Используй /help.")
+
+    async def _handle_natural_language(self, chat_id: int, text: str) -> None:
+        if self.llm_service is None:
+            await self.client.send_message(
+                chat_id,
+                "Свободный текст пока недоступен. Используй /help или /new текст задачи.",
+            )
+            return
+        try:
+            parsed = await self.llm_service.parse_message(text)
+        except (LLMParseError, LLMProviderError):
+            logger.exception("telegram_llm_parse_failed")
+            await self.client.send_message(
+                chat_id,
+                "Не удалось разобрать сообщение. Попробуй сформулировать задачу точнее "
+                "или используй /new текст задачи.",
+            )
+            return
+
+        classification = parsed.classification
+        candidate = parsed.extraction.candidate if parsed.extraction else None
+        if candidate is not None and classification.classification != MessageClassification.UNCLEAR:
+            await self.client.send_message(chat_id, self._format_candidate(candidate))
+            return
+        if classification.classification == MessageClassification.UNCLEAR:
+            await self.client.send_message(
+                chat_id,
+                "Не уверен, что правильно понял сообщение. Уточни, что нужно сделать, "
+                "для кого и к какому сроку.",
+            )
+            return
+        await self.client.send_message(
+            chat_id,
+            f"Сообщение распознано как {classification.classification.value.lower()}, "
+            "но подходящий сценарий ещё не подключён.",
+        )
+
+    @staticmethod
+    def _format_candidate(candidate: TaskCandidate) -> str:
+        lines = [
+            "Кандидат задачи",
+            f"Тип: {candidate.task_type.value}",
+            f"Заголовок: {candidate.title}",
+            f"Приоритет: {candidate.priority.value}",
+            f"Уверенность: {candidate.confidence:.0%}",
+        ]
+        if candidate.assignee_name:
+            lines.append(f"Исполнитель: {candidate.assignee_name}")
+        if candidate.due_at:
+            lines.append(f"Срок: {candidate.due_at.isoformat()}")
+        elif candidate.due_date:
+            lines.append(f"Срок: {candidate.due_date.isoformat()}")
+        lines.append("\nЗадача пока не создана — подтверждение добавим на Phase 4.")
+        return "\n".join(lines)
 
     async def _new_task(
         self, chat_id: int, title: str, message: Mapping[str, Any]
