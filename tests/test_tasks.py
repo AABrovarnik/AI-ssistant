@@ -44,6 +44,25 @@ async def test_task_filter_and_missing_task() -> None:
 
 
 @pytest.mark.asyncio
+async def test_task_create_supports_unknown_party_status() -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/tasks",
+            json={
+                "title": "Получить расчёт",
+                "task_type": "AWAITING",
+                "status": "unknown_party",
+                "idempotency_key": "unknown-party-task-1",
+            },
+            headers=AUTH,
+        )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "unknown_party"
+
+
+@pytest.mark.asyncio
 async def test_task_api_requires_internal_token() -> None:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

@@ -194,8 +194,26 @@ class TelegramBot:
                     if update is None:
                         edit_error = (
                             "Не распознал статус. Используй: новая, в работе, жду, "
-                            "выполнено или отменено."
+                            "выполнено, отменено или исполнитель/отправитель не известен."
                         )
+                elif field == "assignee":
+                    if not text.strip():
+                        edit_error = "Пришли имя исполнителя или отправителя."
+                        update = None
+                    else:
+                        contact = await service.get_or_create_contact(
+                            text, pending_task.user_id
+                        )
+                        update = TaskUpdate(
+                            version=pending_task.version,
+                            assignee_contact_id=contact.id,
+                        )
+                        pending_task.extra = {
+                            **pending_task.extra,
+                            "assignee_name": contact.name,
+                        }
+                        if pending_task.status == TaskStatus.UNKNOWN_PARTY:
+                            update.status = TaskStatus.NEW
                 else:
                     update = TaskUpdate(version=pending_task.version, title=text)
 
@@ -419,6 +437,8 @@ class TelegramBot:
             f"Приоритет: {candidate.priority.value}",
             f"Уверенность: {candidate.confidence:.0%}",
         ]
+        if TelegramBot._candidate_status(candidate) == TaskStatus.UNKNOWN_PARTY:
+            lines.append("Статус: Исполнитель/отправитель не известен")
         if candidate.assignee_name:
             lines.append(f"Исполнитель: {candidate.assignee_name}")
         if candidate.due_at:
@@ -427,6 +447,14 @@ class TelegramBot:
             lines.append(f"Срок: {TelegramBot._format_date(candidate.due_date)}")
         lines.append("\nЗадача пока не создана — выбери действие ниже.")
         return "\n".join(lines)
+
+    @staticmethod
+    def _candidate_status(candidate: TaskCandidate) -> TaskStatus:
+        if candidate.task_type in {TaskType.DELEGATED, TaskType.AWAITING} and not (
+            candidate.assignee_name and candidate.assignee_name.strip()
+        ):
+            return TaskStatus.UNKNOWN_PARTY
+        return TaskStatus.NEW
 
     @staticmethod
     def _zone_info(timezone: str) -> ZoneInfo:
@@ -509,6 +537,9 @@ class TelegramBot:
         message = callback.get("message") or {}
         chat_id = self._chat_id(message)
         parts = data.split(":")
+        if len(parts) == 2 and parts[0] == "digest":
+            await self._handle_digest_callback(callback, parts[1])
+            return
         if len(parts) == 3 and parts[0] == "candidate":
             await self._handle_candidate_callback(callback, parts[1], parts[2])
             return
@@ -597,6 +628,20 @@ class TelegramBot:
                     if isinstance(message_id, int):
                         await self.client.edit_message_text(chat_id, message_id, prompt)
                     return
+                elif action == "assignee":
+                    task = await service.get(task_id)
+                    task.extra = {
+                        **task.extra,
+                        "awaiting_edit": True,
+                        "awaiting_edit_field": "assignee",
+                    }
+                    await session.commit()
+                    prompt = "Пришли имя исполнителя или отправителя отдельным сообщением."
+                    await self.client.answer_callback_query(callback_id, prompt)
+                    message_id = message.get("message_id")
+                    if isinstance(message_id, int):
+                        await self.client.edit_message_text(chat_id, message_id, prompt)
+                    return
                 elif action == "history":
                     task = await service.get(task_id)
                     events = await service.get_task_history(task_id)
@@ -619,6 +664,42 @@ class TelegramBot:
                 self._format_tasks("Задача обновлена", [task], self.timezone),
                 self._keyboard([task]),
             )
+
+    async def _handle_digest_callback(
+        self, callback: Mapping[str, Any], action: str
+    ) -> None:
+        callback_id = str(callback.get("id", ""))
+        message = callback.get("message") or {}
+        chat_id = self._chat_id(message)
+        now = datetime.now(UTC)
+        async with self.session_factory() as session:
+            service = TaskService(session)
+            if action == "overdue":
+                tasks = await service.list_overdue()
+                title = "Просроченные задачи"
+            elif action == "delegated":
+                tasks = await service.list(task_type=TaskType.DELEGATED)
+                title = "Делегированные задачи"
+            elif action == "waiting":
+                tasks = await service.list(task_type=TaskType.AWAITING)
+                title = "Ожидаемые результаты"
+            elif action == "today":
+                local_now = now.astimezone(self._zone_info(self.timezone))
+                start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+                tasks = await service.list(
+                    due_from=start.astimezone(UTC),
+                    due_to=(start + timedelta(days=1)).astimezone(UTC),
+                )
+                title = "Задачи на сегодня"
+            else:
+                await self.client.answer_callback_query(callback_id, "Неизвестный список")
+                return
+        await self.client.answer_callback_query(callback_id, title)
+        await self.client.send_message(
+            chat_id,
+            self._format_tasks(title, tasks, self.timezone),
+            self._keyboard(tasks),
+        )
 
     async def _handle_candidate_callback(
         self, callback: Mapping[str, Any], action: str, source_id_text: str
@@ -665,6 +746,7 @@ class TelegramBot:
                             title=candidate.title,
                             description=candidate.description,
                             task_type=candidate.task_type,
+                            status=self._candidate_status(candidate),
                             priority=candidate.priority,
                             due_at=candidate.due_at,
                             due_date=candidate.due_date,
@@ -751,6 +833,7 @@ class TelegramBot:
     def _status_label(task: Task) -> str:
         labels = {
             TaskStatus.NEW: "Новая",
+            TaskStatus.UNKNOWN_PARTY: "Исполнитель/отправитель не известен",
             TaskStatus.PLANNED: "Запланирована",
             TaskStatus.IN_PROGRESS: "В работе",
             TaskStatus.WAITING: "Жду",
@@ -797,6 +880,7 @@ class TelegramBot:
     def _status_value_label(value: object) -> str:
         labels = {
             TaskStatus.NEW: "Новая",
+            TaskStatus.UNKNOWN_PARTY: "Исполнитель/отправитель не известен",
             TaskStatus.PLANNED: "Запланирована",
             TaskStatus.IN_PROGRESS: "В работе",
             TaskStatus.WAITING: "Жду",
@@ -929,6 +1013,10 @@ class TelegramBot:
             "новая": TaskStatus.NEW,
             "новый": TaskStatus.NEW,
             "new": TaskStatus.NEW,
+            "исполнитель/отправитель не известен": TaskStatus.UNKNOWN_PARTY,
+            "исполнитель не известен": TaskStatus.UNKNOWN_PARTY,
+            "отправитель не известен": TaskStatus.UNKNOWN_PARTY,
+            "unknown party": TaskStatus.UNKNOWN_PARTY,
             "запланирована": TaskStatus.PLANNED,
             "запланировано": TaskStatus.PLANNED,
             "planned": TaskStatus.PLANNED,
@@ -963,6 +1051,12 @@ class TelegramBot:
                 [
                     {"text": "📅 Срок", "callback_data": prefix.format(action="due")},
                     {"text": "🔄 Статус", "callback_data": prefix.format(action="status")},
+                ],
+                [
+                    {
+                        "text": "👤 Исполнитель",
+                        "callback_data": prefix.format(action="assignee"),
+                    }
                 ],
                 [
                     {"text": "↔ Перенести", "callback_data": prefix.format(action="postpone")},

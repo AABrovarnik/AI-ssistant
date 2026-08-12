@@ -31,6 +31,7 @@ class TaskType(StrEnum):
 class TaskStatus(StrEnum):
     NEW = "NEW"
     OPEN = "NEW"  # legacy service/test compatibility
+    UNKNOWN_PARTY = "UNKNOWN_PARTY"
     PLANNED = "PLANNED"
     IN_PROGRESS = "IN_PROGRESS"
     WAITING = "WAITING"
@@ -111,6 +112,12 @@ class ReminderStatus(StrEnum):
     RETRY = "RETRY"
     CANCELLED = "CANCELLED"
     FAILED = "FAILED"
+
+
+class DigestType(StrEnum):
+    MORNING = "MORNING"
+    EVENING = "EVENING"
+    WEEKLY = "WEEKLY"
 
 
 class User(Base):
@@ -318,7 +325,7 @@ class UserSettings(Base):
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
-    morning_digest_time: Mapped[time] = mapped_column(Time, default=time(8, 0))
+    morning_digest_time: Mapped[time] = mapped_column(Time, default=time(7, 0))
     evening_digest_time: Mapped[time] = mapped_column(Time, default=time(19, 0))
     weekly_review_day: Mapped[int] = mapped_column(Integer, default=1)
     quiet_hours_start: Mapped[time] = mapped_column(Time, default=time(22, 0))
@@ -333,4 +340,24 @@ class UserSettings(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class DigestDelivery(Base):
+    __tablename__ = "digest_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "digest_type",
+            "digest_date",
+            name="uq_digest_delivery_user_type_date",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    digest_type: Mapped[DigestType] = mapped_column(String(32), default=DigestType.MORNING)
+    digest_date: Mapped[date] = mapped_column(Date)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

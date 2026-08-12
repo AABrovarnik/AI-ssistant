@@ -43,6 +43,7 @@ class DuplicateSourceError(ValueError):
 
 ACTIVE_STATUSES = {
     TaskStatus.NEW,
+    TaskStatus.UNKNOWN_PARTY,
     TaskStatus.PLANNED,
     TaskStatus.IN_PROGRESS,
     TaskStatus.WAITING,
@@ -53,27 +54,57 @@ ACTIVE_STATUSES = {
 
 ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.NEW: {
+        TaskStatus.UNKNOWN_PARTY,
         TaskStatus.PLANNED,
         TaskStatus.IN_PROGRESS,
         TaskStatus.WAITING,
         TaskStatus.DONE,
         TaskStatus.POSTPONED,
     },
-    TaskStatus.PLANNED: {
+    TaskStatus.UNKNOWN_PARTY: {
+        TaskStatus.NEW,
+        TaskStatus.PLANNED,
         TaskStatus.IN_PROGRESS,
-        TaskStatus.WAITING,
-        TaskStatus.POSTPONED,
-    },
-    TaskStatus.IN_PROGRESS: {
         TaskStatus.WAITING,
         TaskStatus.DONE,
         TaskStatus.POSTPONED,
         TaskStatus.ON_HOLD,
     },
-    TaskStatus.WAITING: {TaskStatus.IN_PROGRESS, TaskStatus.DONE, TaskStatus.POSTPONED},
-    TaskStatus.POSTPONED: {TaskStatus.PLANNED, TaskStatus.IN_PROGRESS},
-    TaskStatus.ON_HOLD: {TaskStatus.PLANNED, TaskStatus.IN_PROGRESS},
-    TaskStatus.OVERDUE: {TaskStatus.DONE, TaskStatus.POSTPONED, TaskStatus.IN_PROGRESS},
+    TaskStatus.PLANNED: {
+        TaskStatus.UNKNOWN_PARTY,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.WAITING,
+        TaskStatus.POSTPONED,
+    },
+    TaskStatus.IN_PROGRESS: {
+        TaskStatus.UNKNOWN_PARTY,
+        TaskStatus.WAITING,
+        TaskStatus.DONE,
+        TaskStatus.POSTPONED,
+        TaskStatus.ON_HOLD,
+    },
+    TaskStatus.WAITING: {
+        TaskStatus.UNKNOWN_PARTY,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.DONE,
+        TaskStatus.POSTPONED,
+    },
+    TaskStatus.POSTPONED: {
+        TaskStatus.UNKNOWN_PARTY,
+        TaskStatus.PLANNED,
+        TaskStatus.IN_PROGRESS,
+    },
+    TaskStatus.ON_HOLD: {
+        TaskStatus.UNKNOWN_PARTY,
+        TaskStatus.PLANNED,
+        TaskStatus.IN_PROGRESS,
+    },
+    TaskStatus.OVERDUE: {
+        TaskStatus.UNKNOWN_PARTY,
+        TaskStatus.DONE,
+        TaskStatus.POSTPONED,
+        TaskStatus.IN_PROGRESS,
+    },
     TaskStatus.DONE: set(),
     TaskStatus.CANCELLED: set(),
 }
@@ -306,6 +337,22 @@ class TaskService:
         self.session.add(contact)
         await self.session.commit()
         await self.session.refresh(contact)
+        return contact
+
+    async def get_or_create_contact(self, name: str, user_id: UUID | None = None) -> Contact:
+        normalized_name = name.strip()
+        if not normalized_name:
+            raise ValueError("contact name must not be empty")
+        user = await self.ensure_user(user_id)
+        contacts = await self.session.scalars(
+            select(Contact).where(Contact.user_id == user.id)
+        )
+        for contact in contacts.all():
+            if contact.name.casefold() == normalized_name.casefold():
+                return contact
+        contact = Contact(name=normalized_name, user_id=user.id)
+        self.session.add(contact)
+        await self.session.flush()
         return contact
 
     async def create_source_message(

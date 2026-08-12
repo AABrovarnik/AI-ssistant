@@ -4,10 +4,14 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+from app.db.session import session_factory
 from app.integrations.telegram.bot import TelegramBot
 from app.integrations.telegram.client import TelegramClientProtocol
 from app.llm.schemas import MessageClassification, SearchDateFilter, SearchFilters, TaskCandidate
-from app.tasks.models import Task, TaskEvent, TaskStatus, TaskType
+from app.tasks.models import Contact, Task, TaskEvent, TaskStatus, TaskType
+from app.tasks.schemas import TaskCreate
+from app.tasks.service import TaskService
+from sqlalchemy import select
 
 
 class FakeTelegramClient:
@@ -146,6 +150,7 @@ def test_task_keyboard_contains_phase2_actions() -> None:
         "✏️ Название",
         "📅 Срок",
         "🔄 Статус",
+        "👤 Исполнитель",
         "↔ Перенести",
         "⏳ Жду",
         "❌ Отмена",
@@ -192,6 +197,7 @@ def test_due_and_status_edit_inputs_are_parsed() -> None:
     assert due_update is not None
     assert due_update.due_at == datetime(2026, 8, 12, 15, 0, tzinfo=UTC)
     assert bot._parse_status("в работе") == TaskStatus.IN_PROGRESS
+    assert bot._parse_status("исполнитель/отправитель не известен") == TaskStatus.UNKNOWN_PARTY
 
 
 def test_candidate_uses_russian_date_format() -> None:
@@ -205,6 +211,96 @@ def test_candidate_uses_russian_date_format() -> None:
     text = TelegramBot._format_candidate(candidate)
 
     assert "Срок: 12.08.2026 15:00" in text
+
+
+def test_delegated_candidate_without_party_gets_separate_status() -> None:
+    candidate = TaskCandidate(
+        task_type=TaskType.AWAITING,
+        title="Получить расчёт",
+        confidence=0.9,
+    )
+
+    text = TelegramBot._format_candidate(candidate)
+
+    assert TelegramBot._candidate_status(candidate) == TaskStatus.UNKNOWN_PARTY
+    assert "Статус: Исполнитель/отправитель не известен" in text
+
+
+def test_assigned_candidate_keeps_new_status() -> None:
+    candidate = TaskCandidate(
+        task_type=TaskType.DELEGATED,
+        title="Подготовить расчёт",
+        assignee_name="Сергей",
+        confidence=0.9,
+    )
+
+    assert TelegramBot._candidate_status(candidate) == TaskStatus.NEW
+
+
+@pytest.mark.asyncio
+async def test_assignee_button_assigns_contact_and_clears_unknown_party_status() -> None:
+    client = FakeTelegramClient()
+    async with session_factory() as session:
+        task = await TaskService(session).create(
+            TaskCreate(
+                title="Получить расчёт",
+                task_type=TaskType.AWAITING,
+                status=TaskStatus.UNKNOWN_PARTY,
+                idempotency_key=f"unknown-party-{uuid4()}",
+            )
+        )
+
+    bot = TelegramBot(client, session_factory, 42)
+    await bot._handle_callback(
+        {
+            "id": "assign-1",
+            "from": {"id": 42},
+            "data": f"task:assignee:{task.id}:{task.version}",
+            "message": {"message_id": 1, "chat": {"id": 100}},
+        }
+    )
+    await bot._handle_natural_language(
+        100,
+        "Сергей",
+        {"message_id": 2, "from": {"id": 42}, "chat": {"id": 100}, "text": "Сергей"},
+    )
+
+    async with session_factory() as session:
+        refreshed = await TaskService(session).get(task.id)
+        contact = await session.scalar(
+            select(Contact).where(Contact.name == "Сергей")
+        )
+
+    assert refreshed.status == TaskStatus.NEW
+    assert refreshed.assignee_contact_id == contact.id
+    assert refreshed.extra["assignee_name"] == "Сергей"
+    assert "Задача изменена" in client.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_digest_button_opens_delegated_task_list() -> None:
+    client = FakeTelegramClient()
+    async with session_factory() as session:
+        await TaskService(session).create(
+            TaskCreate(
+                title="Попросить расчёт",
+                task_type=TaskType.DELEGATED,
+                idempotency_key=f"digest-delegated-{uuid4()}",
+            )
+        )
+
+    bot = TelegramBot(client, session_factory, 42)
+    await bot._handle_callback(
+        {
+            "id": "digest-1",
+            "from": {"id": 42},
+            "data": "digest:delegated",
+            "message": {"message_id": 1, "chat": {"id": 100}},
+        }
+    )
+
+    assert client.callbacks[-1] == ("digest-1", "Делегированные задачи")
+    assert "Попросить расчёт" in client.messages[-1][1]
 
 
 def test_history_is_not_in_card_and_has_explicit_formatter() -> None:

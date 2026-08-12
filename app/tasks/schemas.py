@@ -10,6 +10,7 @@ class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     description: str | None = None
     task_type: TaskType = TaskType.MY_TASK
+    status: TaskStatus = TaskStatus.NEW
     priority: TaskPriority = TaskPriority.P3
     assignee_contact_id: UUID | None = None
     created_by_contact_id: UUID | None = None

@@ -39,3 +39,14 @@ classified and extracted into a validated task candidate; it is shown as a
 preview and is not written to the database yet. The parser supports one JSON
 repair retry and treats incoming message text as untrusted data. Enable the
 OpenClaw OpenAI-compatible chat-completions endpoint before using this flow.
+
+Delegated or awaiting candidates without a recognized assignee/sender are stored
+with status `unknown_party` and shown in Telegram as «Исполнитель/отправитель не
+известен». The `👤 Исполнитель` action accepts the next message as a contact
+name and returns the task to `new` after assignment.
+
+Daily, evening and weekly reviews are read-only PostgreSQL reports sent by the
+worker. The morning report is sent at `07:00 Europe/Moscow` by default, the
+evening report at `19:00`, and the weekly report on the configured ISO weekday.
+They do not require a comment or confirmation; task actions remain explicit and
+require the corresponding button or message.
