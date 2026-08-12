@@ -155,6 +155,7 @@ def test_task_keyboard_contains_phase2_actions() -> None:
         "⏳ Жду",
         "❌ Отмена",
         "🔔 Напомнить",
+        "😴 Отложить",
         "📜 История",
     ]
 

@@ -4,7 +4,7 @@
 
 ## Цель
 
-- Завершить проверку Phase 4 и перейти к Phase 5 — reminder engine.
+- Завершить live-проверку Phase 5 и перейти к Phase 7 — Gmail Read Integration.
 
 ## Статус
 
@@ -65,6 +65,15 @@
 - Отправка отчётов не требует комментария или подтверждения.
 - `digest_deliveries` предотвращает повторную отправку одного типа отчёта за день после рестарта worker.
 
+## Phase 5 — reminder engine
+
+- Реализована детерминированная policy для P1/P2/P3/P4 по срокам задачи.
+- Worker планирует reminders, не создавая дубли; изменение срока отменяет старые policy-reminders.
+- Доставка учитывает quiet hours `22:00–07:00` и переносит напоминание на окончание тихих часов.
+- Ошибки Telegram получают retry с backoff и завершаются статусом `FAILED` после трёх попыток.
+- Просроченные задачи получают overdue reminders по policy; ручная кнопка `🔔 Напомнить` идемпотентна.
+- Кнопка `😴 Отложить` и `POST /tasks/{id}/snooze` переносят активные reminders.
+
 ## Инфраструктурное условие
 
 - OpenClaw `gateway.http.endpoints.chatCompletions.enabled` включён.
@@ -80,4 +89,4 @@
 2. Проверить status preview: `Иван прислал договор`.
 3. Проверить natural-language search: `Что мне должен Иван?`.
 4. Довести сценарий «Изменить» и проверить назначение исполнителя через кнопку `👤 Исполнитель`.
-5. Начать Phase 5: deterministic reminders, quiet hours, dedupe и overdue scan.
+5. Перейти к Phase 7: Gmail Read Integration с source idempotency и Telegram confirmation.

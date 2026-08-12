@@ -19,6 +19,7 @@ from app.integrations.telegram.client import (
     TelegramAuthenticationError,
     TelegramClientProtocol,
 )
+from app.jobs.reminders import create_manual_reminder, snooze_task_reminders
 from app.llm.provider import LLMProviderError
 from app.llm.schemas import (
     MessageClassification,
@@ -30,7 +31,6 @@ from app.llm.service import LLMParseError, LLMService
 from app.tasks.models import (
     DuePrecision,
     ProcessingStatus,
-    Reminder,
     Task,
     TaskEvent,
     TaskPriority,
@@ -580,17 +580,19 @@ class TelegramBot:
                     notice = "Отменено"
                 elif action == "remind":
                     task = await service.get(task_id)
-                    session.add(
-                        Reminder(
-                            task_id=task.id,
-                            user_id=task.user_id,
-                            remind_at=datetime.now(UTC) + timedelta(hours=1),
-                            reminder_type="STATUS_CHECK",
-                            dedupe_key=f"telegram:remind:{task.id}:{task.version}",
-                        )
+                    await create_manual_reminder(
+                        session, task, datetime.now(UTC) + timedelta(hours=1)
                     )
-                    await session.commit()
                     notice = "Напоминание создано на час"
+                elif action == "snooze":
+                    task = await service.get(task_id)
+                    until = datetime.now(UTC) + timedelta(hours=1)
+                    count = await snooze_task_reminders(session, task.id, until)
+                    notice = (
+                        "Напоминания отложены на час"
+                        if count
+                        else "Активных напоминаний для этой задачи нет"
+                    )
                 elif action == "edit":
                     task = await service.get(task_id)
                     task.extra = {
@@ -1066,6 +1068,7 @@ class TelegramBot:
                     {"text": "❌ Отмена", "callback_data": prefix.format(action="cancel")},
                     {"text": "🔔 Напомнить", "callback_data": prefix.format(action="remind")},
                 ],
+                [{"text": "😴 Отложить", "callback_data": prefix.format(action="snooze")}],
                 [{"text": "📜 История", "callback_data": prefix.format(action="history")}],
             ]
         }

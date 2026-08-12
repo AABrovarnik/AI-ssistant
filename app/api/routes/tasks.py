@@ -9,9 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_internal_api_token
 from app.db.session import get_db_session
+from app.jobs.reminders import snooze_task_reminders
 from app.tasks.models import Task, TaskStatus, TaskType
 from app.tasks.schemas import (
     PostponeRequest,
+    SnoozeRequest,
     StatusRequest,
     TaskAction,
     TaskCreate,
@@ -163,6 +165,20 @@ async def postpone_task(
             operation_key(idempotency_key),
         )
     except (TaskNotFoundError, VersionConflictError, InvalidTaskTransitionError) as exc:
+        raise mutation_error(exc) from exc
+
+
+@router.post("/{task_id}/snooze", response_model=TaskRead)
+async def snooze_task(
+    task_id: UUID,
+    data: SnoozeRequest,
+    tasks: TaskService = Depends(service),
+) -> object:
+    try:
+        task = await tasks.get(task_id)
+        await snooze_task_reminders(tasks.session, task.id, data.until)
+        return task
+    except TaskNotFoundError as exc:
         raise mutation_error(exc) from exc
 
 

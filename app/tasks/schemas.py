@@ -55,6 +55,10 @@ class PostponeRequest(TaskAction):
     new_due_at: datetime
 
 
+class SnoozeRequest(BaseModel):
+    until: datetime
+
+
 class StatusRequest(TaskAction):
     status: TaskStatus
 

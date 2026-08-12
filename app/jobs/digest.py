@@ -1,15 +1,16 @@
 """Deterministic read-only daily digest delivery."""
 
+from __future__ import annotations
+
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.integrations.telegram.client import TelegramClientProtocol
 from app.tasks.models import (
     DigestDelivery,
     DigestType,
@@ -20,6 +21,9 @@ from app.tasks.models import (
     UserSettings,
 )
 from app.tasks.service import TaskService
+
+if TYPE_CHECKING:
+    from app.integrations.telegram.client import TelegramClientProtocol
 
 DIGEST_WINDOW = timedelta(minutes=1)
 
