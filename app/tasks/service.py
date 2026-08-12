@@ -390,6 +390,24 @@ class TaskService:
             raise TaskNotFoundError(source_id)
         return source
 
+    async def find_source_message(
+        self,
+        source_type: str,
+        external_id: str,
+        user_id: UUID | None = None,
+    ) -> SourceMessage | None:
+        user = await self.ensure_user(user_id)
+        return cast(
+            SourceMessage | None,
+            await self.session.scalar(
+                select(SourceMessage).where(
+                    SourceMessage.user_id == user.id,
+                    SourceMessage.source_type == source_type,
+                    SourceMessage.external_id == external_id,
+                )
+            ),
+        )
+
     async def save_source_candidate(
         self,
         source_id: UUID,
@@ -402,7 +420,25 @@ class TaskService:
         source.processing_status = ProcessingStatus.PROCESSED
         source.classification = classification
         source.confidence = confidence
-        source.extra = {"candidate": candidate}
+        source.extra = {**source.extra, "candidate": candidate}
+        await self.session.commit()
+        await self.session.refresh(source)
+        return source
+
+    async def mark_source_processed(
+        self,
+        source_id: UUID,
+        classification: str | None = None,
+        confidence: float | None = None,
+        extra: dict[str, object] | None = None,
+        user_id: UUID | None = None,
+    ) -> SourceMessage:
+        source = await self.get_source_message(source_id, user_id)
+        source.processing_status = ProcessingStatus.PROCESSED
+        source.classification = classification
+        source.confidence = confidence
+        if extra:
+            source.extra = {**source.extra, **extra}
         await self.session.commit()
         await self.session.refresh(source)
         return source
@@ -413,7 +449,7 @@ class TaskService:
             select(SourceMessage)
             .where(
                 SourceMessage.user_id == user.id,
-                SourceMessage.source_type == "TELEGRAM",
+                SourceMessage.source_type.in_(["TELEGRAM", "GMAIL"]),
                 SourceMessage.processing_status == ProcessingStatus.PROCESSED,
             )
             .order_by(SourceMessage.created_at.desc())

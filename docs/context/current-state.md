@@ -83,10 +83,21 @@
 - Authenticated `/v1/models` из worker отвечает `200`; реальный parser smoke test прошёл.
 - При пересоздании worker нужно снова передавать token через окружение, если он не добавлен вручную в локальный `.env`.
 
+## Phase 7 — Gmail Read Integration
+
+- Добавлен read-only Gmail REST adapter с OAuth `gmail.readonly`; Gmail API write methods не используются.
+- OAuth access/refresh tokens сохраняются только в зашифрованном виде через Fernet.
+- Добавлены `/integrations/gmail/authorize`, `/integrations/gmail/callback` и `/integrations/gmail/status`.
+- Polling хранит письма в `SourceMessage` с уникальностью `(user_id, GMAIL, message_id)`.
+- Реализованы фильтры VIP/TRUSTED/NORMAL/IGNORE, blocklist/allowlist и игнорирование newsletters по умолчанию.
+- Письмо проходит LLM classification/extraction и становится Telegram candidate preview; задача создаётся только после подтверждения.
+- Повторный poll не создаёт duplicate candidate/source; acceptance suite покрывает письмо «направить документы до 14 августа».
+- Код и миграция готовы локально; применение live-образов отложено из-за Docker Hub `429 Too Many Requests`.
+
 ## Следующие шаги
 
-1. Проверить в Telegram: `Завтра до 15:00 подготовить смету` и `Сергей должен до пятницы прислать расчёт`.
-2. Проверить status preview: `Иван прислал договор`.
-3. Проверить natural-language search: `Что мне должен Иван?`.
-4. Довести сценарий «Изменить» и проверить назначение исполнителя через кнопку `👤 Исполнитель`.
-5. Перейти к Phase 7: Gmail Read Integration с source idempotency и Telegram confirmation.
+1. Настроить Google OAuth client, `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET` и Fernet `TOKEN_ENCRYPTION_KEY`.
+2. Применить миграцию `20260812_05_gmail_read` после успешной сборки Docker-образов.
+3. Открыть `/integrations/gmail/authorize`, завершить OAuth и проверить тестовое письмо через Telegram.
+4. Проверить повторный poll и фильтры sender/newsletter.
+5. После live-проверки перейти к Phase 8: Google Calendar.

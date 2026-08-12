@@ -6,6 +6,7 @@ from app.core.logging import configure_logging
 from app.db.session import session_factory
 from app.integrations.telegram import TelegramBot, TelegramClient
 from app.jobs.digest import run_digest_loop
+from app.jobs.gmail import run_gmail_loop
 from app.jobs.reminders import run_reminder_loop
 from app.llm import LLMService, OpenAICompatibleProvider
 
@@ -56,12 +57,32 @@ async def run() -> None:
                 settings.timezone,
             )
         )
+        gmail_task = (
+            asyncio.create_task(
+                run_gmail_loop(
+                    session_factory,
+                    client,
+                    settings.telegram_owner_user_id,
+                    llm_service,
+                    settings,
+                )
+            )
+            if settings.gmail_enabled
+            else None
+        )
         try:
             await bot.run_polling()
         finally:
             digest_task.cancel()
             reminder_task.cancel()
-            await asyncio.gather(digest_task, reminder_task, return_exceptions=True)
+            if gmail_task is not None:
+                gmail_task.cancel()
+            await asyncio.gather(
+                digest_task,
+                reminder_task,
+                *(task for task in (gmail_task,) if task is not None),
+                return_exceptions=True,
+            )
             await client.close()
             if llm_provider is not None:
                 await llm_provider.close()

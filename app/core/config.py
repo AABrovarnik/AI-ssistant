@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 60
 
     gmail_enabled: bool = False
+    gmail_client_id: str | None = Field(default=None, repr=False)
+    gmail_client_secret: str | None = Field(default=None, repr=False)
+    gmail_redirect_uri: str = "http://localhost:8000/integrations/gmail/callback"
+    gmail_query: str = "in:anywhere -label:spam"
     google_calendar_enabled: bool = False
     token_encryption_key: str | None = Field(default=None, repr=False)
 

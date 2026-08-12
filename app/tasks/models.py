@@ -120,6 +120,16 @@ class DigestType(StrEnum):
     WEEKLY = "WEEKLY"
 
 
+class IntegrationProvider(StrEnum):
+    GMAIL = "GMAIL"
+
+
+class IntegrationStatus(StrEnum):
+    CONNECTED = "CONNECTED"
+    DISCONNECTED = "DISCONNECTED"
+    ERROR = "ERROR"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -337,6 +347,38 @@ class UserSettings(Base):
     default_priority: Mapped[TaskPriority] = mapped_column(String(8), default=TaskPriority.P3)
     extra: Mapped[dict[str, object]] = mapped_column(
         "metadata", JSON, default=dict, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class IntegrationAccount(Base):
+    __tablename__ = "integration_accounts"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", name="uq_integration_account_user_provider"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    provider: Mapped[IntegrationProvider] = mapped_column(String(32))
+    external_account_id: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    access_token_encrypted: Mapped[str] = mapped_column(Text)
+    refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    scopes: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[IntegrationStatus] = mapped_column(
+        String(32), default=IntegrationStatus.CONNECTED
+    )
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    extra: Mapped[dict[str, object]] = mapped_column(
+        "metadata", JSON, default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
