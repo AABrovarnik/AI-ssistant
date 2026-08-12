@@ -83,6 +83,42 @@ async def test_planning_is_idempotent_and_creates_policy_records() -> None:
 
 
 @pytest.mark.asyncio
+async def test_planning_does_not_reinsert_terminal_policy_reminders() -> None:
+    now = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
+    async with session_factory() as session:
+        task = await TaskService(session).create(
+            TaskCreate(
+                title="Не дублировать напоминание",
+                due_at=now,
+                idempotency_key=f"reminder-terminal-{uuid4()}",
+            )
+        )
+
+    assert await plan_reminders(session_factory, now) == 2
+    async with session_factory() as session:
+        deadline = await session.scalar(
+            select(Reminder).where(
+                Reminder.task_id == task.id, Reminder.reminder_type == "DEADLINE"
+            )
+        )
+        assert deadline is not None
+        deadline.status = ReminderStatus.SENT
+        await session.commit()
+
+    assert await plan_reminders(session_factory, now) == 0
+    async with session_factory() as session:
+        rows = list(
+            (
+                await session.scalars(
+                    select(Reminder).where(Reminder.task_id == task.id)
+                )
+            ).all()
+        )
+    assert len(rows) == 2
+    assert sum(row.reminder_type == "DEADLINE" for row in rows) == 1
+
+
+@pytest.mark.asyncio
 async def test_due_reminder_respects_quiet_hours_and_sends_afterward() -> None:
     now = datetime(2026, 8, 12, 22, 0, tzinfo=UTC)  # 01:00 Europe/Moscow.
     async with session_factory() as session:

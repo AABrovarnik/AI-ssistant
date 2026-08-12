@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.tasks.models import Reminder, ReminderStatus, Task, TaskPriority, TaskStatus, UserSettings
@@ -134,35 +135,56 @@ async def plan_reminders(
         for task in tasks:
             specs = reminder_specs(task, current, timezone)
             wanted = {spec.dedupe_key: spec for spec in specs}
+            # Include terminal rows in the lookup.  The dedupe key is unique for
+            # the lifetime of a policy reminder, so filtering to PENDING/RETRY
+            # would make a later planner run try to insert a key belonging to a
+            # SENT, FAILED, or CANCELLED row and crash on uq_reminders_dedupe.
             existing_rows = list(
                 (
                     await session.scalars(
                         select(Reminder).where(
                             Reminder.task_id == task.id,
                             Reminder.dedupe_key.like(f"policy:{task.id}:%"),
-                            Reminder.status.in_([ReminderStatus.PENDING, ReminderStatus.RETRY]),
                         )
                     )
                 ).all()
             )
-            existing_keys = {str(row.dedupe_key) for row in existing_rows}
+            existing_by_key = {
+                str(row.dedupe_key): row for row in existing_rows if row.dedupe_key
+            }
             for row in existing_rows:
                 if row.dedupe_key not in wanted:
-                    row.status = ReminderStatus.CANCELLED
+                    if row.status in {ReminderStatus.PENDING, ReminderStatus.RETRY}:
+                        row.status = ReminderStatus.CANCELLED
             for spec in wanted.values():
-                if spec.dedupe_key in existing_keys:
+                existing = existing_by_key.get(spec.dedupe_key)
+                if existing is not None:
+                    # A cancelled policy can become relevant again after a task
+                    # edit. Reuse its unique row instead of inserting a duplicate.
+                    if existing.status == ReminderStatus.CANCELLED:
+                        existing.status = ReminderStatus.PENDING
+                        existing.remind_at = spec.remind_at
+                        existing.reminder_type = spec.reminder_type
+                        existing.last_error = None
                     continue
-                session.add(
-                    Reminder(
-                        task_id=task.id,
-                        user_id=task.user_id,
-                        remind_at=spec.remind_at,
-                        reminder_type=spec.reminder_type,
-                        dedupe_key=spec.dedupe_key,
-                        extra={"policy": True},
+                values = {
+                    "task_id": task.id,
+                    "user_id": task.user_id,
+                    "remind_at": spec.remind_at,
+                    "reminder_type": spec.reminder_type,
+                    "dedupe_key": spec.dedupe_key,
+                    "extra": {"policy": True},
+                }
+                if session.bind is not None and session.bind.dialect.name == "postgresql":
+                    result = await session.execute(
+                        pg_insert(Reminder)
+                        .values(values)
+                        .on_conflict_do_nothing(index_elements=[Reminder.dedupe_key])
                     )
-                )
-                created += 1
+                    created += int(getattr(result, "rowcount", 0) or 0)
+                else:
+                    session.add(Reminder(**values))
+                    created += 1
         await session.commit()
     return created
 
