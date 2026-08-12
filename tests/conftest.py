@@ -3,8 +3,11 @@ from collections.abc import AsyncIterator
 
 import pytest_asyncio
 
-# Local tests must not depend on the Docker Compose hostname `db`.
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+# Local tests must not depend on the Docker Compose hostname `db` or write to
+# the working PostgreSQL database.  PostgreSQL tests are opt-in and must use a
+# separately provisioned test database.
+if os.getenv("RUN_POSTGRES_TESTS") != "1":
+    os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest_asyncio.fixture(autouse=True)

@@ -119,6 +119,44 @@ async def test_planning_does_not_reinsert_terminal_policy_reminders() -> None:
 
 
 @pytest.mark.asyncio
+async def test_planning_repairs_stale_pending_policy_schedule() -> None:
+    now = datetime(2026, 8, 12, 14, 0, tzinfo=UTC)
+    due_at = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
+    async with session_factory() as session:
+        task = await TaskService(session).create(
+            TaskCreate(
+                title="Исправить старое напоминание",
+                due_at=due_at,
+                idempotency_key=f"reminder-reschedule-{uuid4()}",
+            )
+        )
+        stale = Reminder(
+            task_id=task.id,
+            user_id=task.user_id,
+            remind_at=now,
+            reminder_type="OVERDUE_1D",
+            dedupe_key=f"policy:{task.id}:OVERDUE_1D",
+            extra={"policy": True},
+        )
+        session.add(stale)
+        await session.commit()
+
+    assert await plan_reminders(session_factory, now) == 0
+
+    async with session_factory() as session:
+        reminder = await session.scalar(
+            select(Reminder).where(
+                Reminder.task_id == task.id,
+                Reminder.reminder_type == "OVERDUE_1D",
+            )
+        )
+    assert reminder is not None
+    assert reminder.remind_at.replace(tzinfo=UTC) == datetime(
+        2026, 8, 13, 12, 0, tzinfo=UTC
+    )
+
+
+@pytest.mark.asyncio
 async def test_due_reminder_respects_quiet_hours_and_sends_afterward() -> None:
     now = datetime(2026, 8, 12, 22, 0, tzinfo=UTC)  # 01:00 Europe/Moscow.
     async with session_factory() as session:

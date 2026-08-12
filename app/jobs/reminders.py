@@ -166,6 +166,14 @@ async def plan_reminders(
                         existing.remind_at = spec.remind_at
                         existing.reminder_type = spec.reminder_type
                         existing.last_error = None
+                    elif (
+                        existing.status == ReminderStatus.PENDING
+                        and _as_utc(existing.remind_at) < _as_utc(spec.remind_at)
+                    ):
+                        # Keep a user snooze (which moves the reminder later),
+                        # but repair pending rows left behind by an older policy
+                        # version that scheduled an overdue reminder too early.
+                        existing.remind_at = spec.remind_at
                     continue
                 values = {
                     "task_id": task.id,
