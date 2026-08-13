@@ -86,11 +86,26 @@ class TaskRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None
+    calendar_event_id: str | None
+    calendar_sync_status: str | None
 
     @field_serializer("status")
     def serialize_status(self, value: TaskStatus) -> str:
         # Keep the pre-Phase-1 wire format for existing API clients.
         return value.value.lower()
+
+
+class CalendarEventRequest(BaseModel):
+    mode: str = Field(default="DEADLINE", min_length=1, max_length=32)
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+
+
+class CalendarEventRead(BaseModel):
+    task_id: UUID
+    event_id: str | None
+    html_link: str | None
+    status: str
 
 
 class ContactCreate(BaseModel):

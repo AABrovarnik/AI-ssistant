@@ -7,11 +7,22 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.security import require_internal_api_token
 from app.db.session import get_db_session
+from app.integrations.calendar.client import CalendarAPIError, CalendarOAuthClient
+from app.integrations.calendar.service import (
+    CalendarNotConnectedError,
+    CalendarSyncError,
+    CalendarTaskService,
+    resolve_event_window,
+)
+from app.integrations.gmail.security import TokenCipher, TokenEncryptionError
 from app.jobs.reminders import snooze_task_reminders
 from app.tasks.models import Task, TaskStatus, TaskType
 from app.tasks.schemas import (
+    CalendarEventRead,
+    CalendarEventRequest,
     PostponeRequest,
     SnoozeRequest,
     StatusRequest,
@@ -38,6 +49,34 @@ def service(session: AsyncSession = Depends(get_db_session)) -> TaskService:
 
 def operation_key(header_value: str | None) -> str:
     return header_value or str(uuid4())
+
+
+def _calendar_oauth_client() -> CalendarOAuthClient:
+    settings = get_settings()
+    if not settings.google_calendar_enabled:
+        raise HTTPException(status_code=503, detail="Google Calendar integration is disabled")
+    if not settings.gmail_client_id or not settings.gmail_client_secret:
+        raise HTTPException(status_code=503, detail="Google OAuth credentials are not configured")
+    return CalendarOAuthClient(
+        settings.gmail_client_id,
+        settings.gmail_client_secret,
+        settings.google_calendar_redirect_uri,
+    )
+
+
+async def _sync_linked_calendar(task: Task, session: AsyncSession) -> None:
+    if not task.calendar_event_id:
+        return
+    settings = get_settings()
+    if not settings.google_calendar_enabled:
+        return
+    oauth = _calendar_oauth_client()
+    try:
+        cipher = TokenCipher(settings.token_encryption_key)
+        window = resolve_event_window(task, None, None)
+        await CalendarTaskService(session, cipher, oauth).update_event(task.id, window)
+    finally:
+        await oauth.close()
 
 
 def mutation_error(exc: Exception) -> HTTPException:
@@ -129,9 +168,18 @@ async def update_task(
     tasks: TaskService = Depends(service),
 ) -> object:
     try:
-        return await tasks.update(task_id, data, operation_key(idempotency_key))
+        task = await tasks.update(task_id, data, operation_key(idempotency_key))
+        await _sync_linked_calendar(task, tasks.session)
+        return task
     except (TaskNotFoundError, VersionConflictError, InvalidTaskTransitionError) as exc:
         raise mutation_error(exc) from exc
+    except (
+        CalendarAPIError,
+        CalendarNotConnectedError,
+        CalendarSyncError,
+        TokenEncryptionError,
+    ) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/{task_id}/complete", response_model=TaskRead)
@@ -158,14 +206,23 @@ async def postpone_task(
     tasks: TaskService = Depends(service),
 ) -> object:
     try:
-        return await tasks.postpone(
+        task = await tasks.postpone(
             task_id,
             data.new_due_at,
             data.version,
             operation_key(idempotency_key),
         )
+        await _sync_linked_calendar(task, tasks.session)
+        return task
     except (TaskNotFoundError, VersionConflictError, InvalidTaskTransitionError) as exc:
         raise mutation_error(exc) from exc
+    except (
+        CalendarAPIError,
+        CalendarNotConnectedError,
+        CalendarSyncError,
+        TokenEncryptionError,
+    ) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/{task_id}/snooze", response_model=TaskRead)
@@ -213,3 +270,75 @@ async def cancel_task(
         )
     except (TaskNotFoundError, VersionConflictError, InvalidTaskTransitionError) as exc:
         raise mutation_error(exc) from exc
+
+
+@router.post("/{task_id}/calendar", response_model=CalendarEventRead)
+async def create_calendar_event(
+    task_id: UUID,
+    data: CalendarEventRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> object:
+    try:
+        task = await TaskService(session).get(task_id)
+        window = resolve_event_window(task, data.start_at, data.end_at)
+        settings = get_settings()
+        cipher = TokenCipher(settings.token_encryption_key)
+        oauth = _calendar_oauth_client()
+        try:
+            result = await CalendarTaskService(session, cipher, oauth).create_event(task_id, window)
+        finally:
+            await oauth.close()
+        return result
+    except TaskNotFoundError as exc:
+        raise mutation_error(exc) from exc
+    except CalendarNotConnectedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (CalendarAPIError, CalendarSyncError, TokenEncryptionError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.patch("/{task_id}/calendar", response_model=CalendarEventRead)
+async def update_calendar_event(
+    task_id: UUID,
+    data: CalendarEventRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> object:
+    try:
+        task = await TaskService(session).get(task_id)
+        window = resolve_event_window(task, data.start_at, data.end_at)
+        settings = get_settings()
+        cipher = TokenCipher(settings.token_encryption_key)
+        oauth = _calendar_oauth_client()
+        try:
+            result = await CalendarTaskService(session, cipher, oauth).update_event(task_id, window)
+        finally:
+            await oauth.close()
+        return result
+    except TaskNotFoundError as exc:
+        raise mutation_error(exc) from exc
+    except CalendarNotConnectedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (CalendarAPIError, CalendarSyncError, TokenEncryptionError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.delete("/{task_id}/calendar", response_model=CalendarEventRead)
+async def delete_calendar_event(
+    task_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+) -> object:
+    try:
+        settings = get_settings()
+        cipher = TokenCipher(settings.token_encryption_key)
+        oauth = _calendar_oauth_client()
+        try:
+            result = await CalendarTaskService(session, cipher, oauth).delete_event(task_id)
+        finally:
+            await oauth.close()
+        return result
+    except TaskNotFoundError as exc:
+        raise mutation_error(exc) from exc
+    except CalendarNotConnectedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (CalendarAPIError, CalendarSyncError, TokenEncryptionError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

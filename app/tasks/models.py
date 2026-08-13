@@ -122,6 +122,7 @@ class DigestType(StrEnum):
 
 class IntegrationProvider(StrEnum):
     GMAIL = "GMAIL"
+    GOOGLE_CALENDAR = "GOOGLE_CALENDAR"
 
 
 class IntegrationStatus(StrEnum):

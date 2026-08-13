@@ -63,3 +63,10 @@ into candidates, and shown in Telegram for confirmation. No Gmail message create
 a task automatically, and newsletters can be filtered through `user_settings.extra`.
 The initial and subsequent polls do not read messages before `GMAIL_START_AT`,
 which defaults to `2026-08-01T00:00:00+00:00`.
+
+Google Calendar is opt-in with `GOOGLE_CALENDAR_ENABLED=true`. It reuses the
+configured Google OAuth client and stores Calendar credentials encrypted. Open
+`GET /integrations/calendar/authorize`, complete consent for the
+`calendar.events` scope, then create an event explicitly with
+`POST /tasks/{task_id}/calendar`. Linked events are updated when a task is
+postponed or its deadline changes; no event is created automatically by default.

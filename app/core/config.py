@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     gmail_query: str = "in:anywhere -label:spam"
     gmail_start_at: datetime = datetime(2026, 8, 1, tzinfo=UTC)
     google_calendar_enabled: bool = False
+    google_calendar_redirect_uri: str = "http://localhost:8000/integrations/calendar/callback"
     token_encryption_key: str | None = Field(default=None, repr=False)
 
 

@@ -311,6 +311,18 @@ Later:
 
 Требует явного user confirmation.
 
+## GET /integrations/calendar/authorize
+
+Returns a Google OAuth authorization URL. Requires the internal bearer token.
+
+## GET /integrations/calendar/callback
+
+Completes Calendar OAuth and stores the encrypted token.
+
+## GET /integrations/calendar/status
+
+Returns Calendar connection status. Requires the internal bearer token.
+
 ---
 
 # Settings
