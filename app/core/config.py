@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from functools import lru_cache
 
 from pydantic import Field
@@ -39,6 +40,7 @@ class Settings(BaseSettings):
     gmail_client_secret: str | None = Field(default=None, repr=False)
     gmail_redirect_uri: str = "http://localhost:8000/integrations/gmail/callback"
     gmail_query: str = "in:anywhere -label:spam"
+    gmail_start_at: datetime = datetime(2026, 8, 1, tzinfo=UTC)
     google_calendar_enabled: bool = False
     token_encryption_key: str | None = Field(default=None, repr=False)
 

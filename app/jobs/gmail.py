@@ -132,6 +132,7 @@ async def poll_gmail_accounts(
                     ),
                     settings.gmail_query,
                     current,
+                    settings.gmail_start_at,
                 )
                 processed += result.candidates
             finally:

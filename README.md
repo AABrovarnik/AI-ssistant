@@ -61,3 +61,5 @@ OAuth client and a valid Fernet `TOKEN_ENCRYPTION_KEY`, then request
 with the `gmail.readonly` scope; messages are stored by Gmail `message_id`, parsed
 into candidates, and shown in Telegram for confirmation. No Gmail message creates
 a task automatically, and newsletters can be filtered through `user_settings.extra`.
+The initial and subsequent polls do not read messages before `GMAIL_START_AT`,
+which defaults to `2026-08-01T00:00:00+00:00`.

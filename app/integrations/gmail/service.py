@@ -41,6 +41,7 @@ class GmailSyncResult:
 
 
 CandidateNotifier = Callable[[UUID, TaskCandidate], Awaitable[None]]
+DEFAULT_GMAIL_START_AT = datetime(2026, 8, 1, tzinfo=UTC)
 
 
 def _patterns(value: object) -> set[str]:
@@ -94,9 +95,10 @@ class GmailInboxService:
         notify_candidate: CandidateNotifier | None = None,
         query: str = "in:anywhere -label:spam",
         now: datetime | None = None,
+        minimum_received_at: datetime | None = DEFAULT_GMAIL_START_AT,
     ) -> GmailSyncResult:
         current = now or datetime.now(UTC)
-        poll_query = self._poll_query(query, account.last_polled_at)
+        poll_query = self._poll_query(query, account.last_polled_at, minimum_received_at)
         message_ids = await client.list_message_ids(poll_query)
         result = GmailSyncResult(fetched=len(message_ids))
 
@@ -206,10 +208,19 @@ class GmailInboxService:
         return result
 
     @staticmethod
-    def _poll_query(query: str, last_polled_at: datetime | None) -> str:
-        if last_polled_at is None:
+    def _poll_query(
+        query: str,
+        last_polled_at: datetime | None,
+        minimum_received_at: datetime | None = DEFAULT_GMAIL_START_AT,
+    ) -> str:
+        poll_from = last_polled_at
+        if minimum_received_at is not None and (
+            poll_from is None or poll_from < minimum_received_at
+        ):
+            poll_from = minimum_received_at
+        if poll_from is None:
             return query
-        timestamp = int(last_polled_at.astimezone(UTC).timestamp())
+        timestamp = int(poll_from.astimezone(UTC).timestamp())
         return f"{query} after:{timestamp}"
 
     @staticmethod

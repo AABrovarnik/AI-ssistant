@@ -94,6 +94,22 @@ def test_gmail_filter_defaults_to_normal_and_ignores_newsletters() -> None:
     assert gmail_filter_decision(newsletter, normal) == GmailFilterDecision.IGNORE
 
 
+def test_gmail_poll_query_respects_history_cutoff() -> None:
+    cutoff = datetime(2026, 8, 1, tzinfo=UTC)
+    before_cutoff = datetime(2026, 7, 31, 23, 59, tzinfo=UTC)
+    after_cutoff = datetime(2026, 8, 12, tzinfo=UTC)
+
+    assert GmailInboxService._poll_query("in:inbox", None, cutoff) == (
+        "in:inbox after:1785542400"
+    )
+    assert GmailInboxService._poll_query("in:inbox", before_cutoff, cutoff) == (
+        "in:inbox after:1785542400"
+    )
+    assert GmailInboxService._poll_query("in:inbox", after_cutoff, cutoff) == (
+        "in:inbox after:1786492800"
+    )
+
+
 @pytest.mark.asyncio
 async def test_gmail_poll_stores_candidate_and_is_idempotent() -> None:
     async with session_factory() as session:
@@ -138,7 +154,7 @@ async def test_gmail_poll_stores_candidate_and_is_idempotent() -> None:
     assert len(notifications) == 1
     assert notifications[0][1].title == "Направить документы"
     assert client.list_queries == [
-        "in:anywhere -label:spam",
+        "in:anywhere -label:spam after:1785542400",
         "in:anywhere -label:spam after:1786539600",
     ]
 
