@@ -13,7 +13,15 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.tasks.models import Reminder, ReminderStatus, Task, TaskPriority, TaskStatus, UserSettings
+from app.tasks.models import (
+    Reminder,
+    ReminderStatus,
+    Task,
+    TaskPriority,
+    TaskStatus,
+    TaskType,
+    UserSettings,
+)
 from app.tasks.service import TaskService
 
 if TYPE_CHECKING:
@@ -114,6 +122,17 @@ def reminder_specs(
                 remind_at=now,
                 reminder_type="OVERDUE_DAILY",
                 dedupe_key=f"policy:{task.id}:OVERDUE_DAILY:{local_today.isoformat()}",
+            )
+        )
+    if TaskType(task.task_type or TaskType.MY_TASK) == TaskType.AWAITING:
+        follow_up_at = due_at + timedelta(days=1)
+        if follow_up_at <= now:
+            follow_up_at = now
+        specs.append(
+            ReminderSpec(
+                remind_at=follow_up_at,
+                reminder_type="AWAITING_FOLLOW_UP",
+                dedupe_key=f"policy:{task.id}:AWAITING_FOLLOW_UP",
             )
         )
     return specs
@@ -219,7 +238,29 @@ def reminder_text(task: Task, reminder: Reminder, timezone: str = "Europe/Moscow
         due = _as_utc(task.due_at).astimezone(_zone(timezone)).strftime(
             "\nСрок: %d.%m.%Y %H:%M"
         )
+    if reminder.reminder_type == "AWAITING_FOLLOW_UP":
+        return f"⏳ Пора уточнить результат\n{task.title}{due}"
     return f"🔔 Напоминание\n{task.title}\nТип: {reminder.reminder_type}{due}"
+
+
+def reminder_keyboard(task: Task, reminder: Reminder) -> dict[str, Any] | None:
+    if reminder.reminder_type != "AWAITING_FOLLOW_UP":
+        return None
+    prefix = f"followup:{{action}}:{task.id}:{task.version}"
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "✅ Результат получен",
+                    "callback_data": prefix.format(action="done"),
+                },
+                {
+                    "text": "⏰ Напомнить завтра",
+                    "callback_data": prefix.format(action="snooze"),
+                },
+            ]
+        ]
+    }
 
 
 async def send_due_reminders(
@@ -266,7 +307,11 @@ async def send_due_reminders(
                 reminder.status = ReminderStatus.CANCELLED
                 continue
             try:
-                await client.send_message(chat_id, reminder_text(task, reminder, timezone))
+                await client.send_message(
+                    chat_id,
+                    reminder_text(task, reminder, timezone),
+                    reply_markup=reminder_keyboard(task, reminder),
+                )
             except Exception as exc:
                 reminder.attempt_count += 1
                 reminder.last_error = str(exc)[:2000]
@@ -302,6 +347,32 @@ async def create_manual_reminder(
         reminder_type="STATUS_CHECK",
         dedupe_key=key,
         extra={"manual": True},
+    )
+    session.add(reminder)
+    await session.commit()
+    await session.refresh(reminder)
+    return reminder
+
+
+async def create_follow_up_reminder(
+    session: AsyncSession,
+    task: Task,
+    remind_at: datetime,
+    operation_key: str | None = None,
+) -> Reminder:
+    if TaskType(task.task_type) != TaskType.AWAITING:
+        raise ValueError("follow-up reminders require an AWAITING task")
+    key = operation_key or f"followup:{task.id}:{_as_utc(remind_at).isoformat()}"
+    existing = await session.scalar(select(Reminder).where(Reminder.dedupe_key == key))
+    if existing is not None:
+        return existing
+    reminder = Reminder(
+        task_id=task.id,
+        user_id=task.user_id,
+        remind_at=_as_utc(remind_at),
+        reminder_type="AWAITING_FOLLOW_UP",
+        dedupe_key=key,
+        extra={"follow_up": True},
     )
     session.add(reminder)
     await session.commit()

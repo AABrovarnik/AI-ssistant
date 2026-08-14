@@ -11,7 +11,7 @@ from app.jobs.reminders import (
     send_due_reminders,
     snooze_task_reminders,
 )
-from app.tasks.models import Reminder, ReminderStatus, Task, TaskPriority
+from app.tasks.models import Reminder, ReminderStatus, Task, TaskPriority, TaskType
 from app.tasks.schemas import TaskCreate
 from app.tasks.service import TaskService
 from sqlalchemy import select
@@ -21,11 +21,13 @@ class FakeReminderClient:
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
         self.messages: list[str] = []
+        self.reply_markups: list[Any] = []
 
     async def send_message(self, chat_id: int, text: str, **_: Any) -> dict[str, Any]:
         if self.fail:
             raise RuntimeError("telegram unavailable")
         self.messages.append(text)
+        self.reply_markups.append(_.get("reply_markup"))
         return {"chat": {"id": chat_id}, "text": text}
 
 
@@ -50,6 +52,57 @@ def test_reminder_policy_is_deterministic_by_priority() -> None:
     assert reminder_specs(
         Task(id=uuid4(), title="P4", due_at=task.due_at, priority=TaskPriority.P4), now
     ) == []
+
+
+def test_awaiting_task_gets_one_idempotent_follow_up_spec() -> None:
+    now = datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
+    task = Task(
+        id=uuid4(),
+        title="Получить договор",
+        task_type=TaskType.AWAITING,
+        due_at=now - timedelta(days=2),
+        priority=TaskPriority.P3,
+    )
+
+    specs = reminder_specs(task, now)
+    follow_ups = [spec for spec in specs if spec.reminder_type == "AWAITING_FOLLOW_UP"]
+
+    assert len(follow_ups) == 1
+    assert follow_ups[0].remind_at == now
+    assert follow_ups[0].dedupe_key == f"policy:{task.id}:AWAITING_FOLLOW_UP"
+
+
+@pytest.mark.asyncio
+async def test_awaiting_follow_up_delivery_has_safe_actions() -> None:
+    now = datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
+    async with session_factory() as session:
+        await TaskService(session).create(
+            TaskCreate(
+                title="Получить договор",
+                task_type=TaskType.AWAITING,
+                due_at=now - timedelta(days=2),
+                idempotency_key=f"awaiting-follow-up-{uuid4()}",
+            )
+        )
+
+    await plan_reminders(session_factory, now)
+    client = FakeReminderClient()
+    sent = await send_due_reminders(
+        session_factory, cast(TelegramClientProtocol, client), 42, now
+    )
+
+    follow_up_index = next(
+        index for index, text in enumerate(client.messages) if "Пора уточнить результат" in text
+    )
+    keyboard = client.reply_markups[follow_up_index]
+    labels = [
+        button["text"]
+        for row in keyboard["inline_keyboard"]
+        for button in row
+    ]
+
+    assert sent == 3
+    assert labels == ["✅ Результат получен", "⏰ Напомнить завтра"]
 
 
 @pytest.mark.asyncio

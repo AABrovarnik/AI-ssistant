@@ -170,6 +170,11 @@ async def update_task(
     try:
         task = await tasks.update(task_id, data, operation_key(idempotency_key))
         await _sync_linked_calendar(task, tasks.session)
+        # Calendar sync commits the same session and may expire server-generated
+        # task fields such as updated_at. Refresh before FastAPI serializes the
+        # ORM object; otherwise async SQLAlchemy attempts implicit IO during
+        # response validation and raises MissingGreenlet.
+        await tasks.session.refresh(task)
         return task
     except (TaskNotFoundError, VersionConflictError, InvalidTaskTransitionError) as exc:
         raise mutation_error(exc) from exc

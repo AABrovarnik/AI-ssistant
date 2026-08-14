@@ -2,6 +2,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from app.api.routes import tasks as task_routes
 from app.core.config import get_settings
 from app.main import app
 
@@ -69,3 +70,32 @@ async def test_task_api_requires_internal_token() -> None:
         response = await client.get("/tasks")
 
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_task_update_refreshes_response_after_calendar_sync(monkeypatch) -> None:
+    async def expire_updated_at(task, session) -> None:
+        session.expire(task, ["updated_at"])
+
+    monkeypatch.setattr(task_routes, "_sync_linked_calendar", expire_updated_at)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/tasks",
+            json={
+                "title": "Calendar response refresh",
+                "due_at": "2026-08-14T10:00:00Z",
+                "idempotency_key": "calendar-response-refresh-1",
+            },
+            headers=AUTH,
+        )
+        task_id = created.json()["id"]
+        updated = await client.patch(
+            f"/tasks/{task_id}",
+            json={"due_at": "2026-08-14T11:00:00Z"},
+            headers={**AUTH, "Idempotency-Key": "calendar-response-refresh-2"},
+        )
+
+    assert created.status_code == 201
+    assert updated.status_code == 200
+    assert updated.json()["due_at"].startswith("2026-08-14T11:00:00")

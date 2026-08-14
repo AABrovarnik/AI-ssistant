@@ -1,103 +1,106 @@
 # Current state handoff
 
-Дата обновления: `2026-08-12`
+Дата обновления: `2026-08-14`
 
 ## Цель
 
-- Завершить live-проверку Phase 5 и перейти к Phase 7 — Gmail Read Integration.
+- Первый production-ready срез Telegram-first AI Secretary завершён.
+- Интеграции Gmail и Google Calendar работают в opt-in режиме и сохраняют
+  границу явного подтверждения пользователем.
 
 ## Статус
 
-- Phase 1 завершена и опубликована на GitHub.
-- Phase 2 реализована локально; polling активен после ротации Telegram token.
-- Phase 3 завершена; Phase 4 реализована локально, worker собран и тесты проходят.
-- Reviewed dev pack хранится в `Posts/ai-secretary-v1.0-dev-pack/reviewed/`.
+- Phase 1–9 завершены, включая E2E-hardening для задач, делегаций, Gmail,
+  reminders и `AWAITING` follow-up.
+- Phase 10 по безопасности и эксплуатации завершена.
+- Полный локальный набор тестов: `55 passed, 6 skipped`.
+- Reviewed development pack хранится в
+  `Posts/ai-secretary-v1.0-dev-pack/reviewed/`.
 
-## Факты
+## Основные возможности
 
-- Добавлены Telegram Bot API client, long polling и owner whitelist.
-- Реализованы `/start`, `/help`, `/new`, `/today`, `/week`, `/overdue`, `/delegated`, `/waiting`, `/search`, `/settings` и `/edit`.
-- Добавлены inline actions: complete, edit prompt, postpone, waiting, cancel, reminder.
-- Telegram unit tests используют fake client и не ходят во внешний API.
-- Full suite на PostgreSQL: `27 passed, 2 skipped`.
-- Ruff и mypy проходят.
+- PostgreSQL используется как источник истины; значимые изменения аудируются
+  и выполняются идемпотентно.
+- Telegram поддерживает создание, редактирование, завершение, перенос,
+  отмену, поиск, обзоры, напоминания, делегации и ожидание результата.
+- Свободный текст проходит через структурированный LLM parser и показывается
+  как candidate preview; задача создаётся только после подтверждения.
+- Для `DELEGATED/AWAITING` без распознанного исполнителя используется статус
+  `UNKNOWN_PARTY`; исполнитель назначается отдельным подтверждённым действием.
+- Утренние, вечерние и недельные обзоры формируются только из PostgreSQL и не
+  изменяют задачи.
+- Reminder Engine детерминирован, дедуплицирован, учитывает quiet hours,
+  retry/backoff и поддерживает snooze.
+- Для просроченных `AWAITING` задач через сутки создаётся один
+  `AWAITING_FOLLOW_UP`. Он отправляется только владельцу и предлагает
+  `Результат получен` или `Напомнить завтра`; внешним контактам сообщения не
+  отправляются.
 
-## Безопасность и блокеры
+## Gmail
 
-- Старый Telegram token был отозван/заменён после `401` и попадания URL в старые Docker logs.
-- httpx request logging отключён для Telegram URL, а `401` прекращает polling без retry-loop.
-- Новый token прошёл `getMe`; в локальном `.env` выставлен `TELEGRAM_MODE=polling`.
-- Token не записан в Git и не повторяется в handoff.
+- Gmail включается через `GMAIL_ENABLED=true` и использует только OAuth scope
+  `gmail.readonly`.
+- Access/refresh tokens хранятся зашифрованными через Fernet.
+- Письма сохраняются по уникальному Gmail `message_id`, фильтруются и
+  превращаются в candidate preview.
+- Письмо не создаёт задачу автоматически; требуется подтверждение в Telegram.
+- Начальная граница чтения задаётся `GMAIL_START_AT` и по умолчанию равна
+  `2026-08-01T00:00:00+00:00`.
 
-## Phase 3
+## Google Calendar
 
-- Добавлены `LLMProvider`, OpenAI-compatible transport и `LLMService`.
-- Реализованы classifier, task extractor, status analyzer и search parser.
-- Ответы валидируются Pydantic; предусмотрен ровно один repair retry.
-- Confidence ниже `0.65` принудительно переводит классификацию в `UNCLEAR`.
-- Свободный текст Telegram показывает task candidate preview и пока не создаёт задачу в БД.
-- `TASK_COMPLETE` и `STATUS_UPDATE` получают безопасный status preview без автоматического изменения БД.
-- `INFORMATION` проходит через search parser, фильтрует задачи локально и возвращает результаты.
-- Полный Docker test suite: `27 passed, 2 skipped`; Ruff и mypy проходят.
+- Calendar включается через `GOOGLE_CALENDAR_ENABLED=true`.
+- OAuth credentials хранятся зашифрованными; используется scope
+  `calendar.events`.
+- Создание события выполняется явно через
+  `POST /tasks/{task_id}/calendar` после подключения и подтверждения.
+- При переносе задачи или изменении срока связанное событие обновляется.
+- Автоматическое создание событий, watch/webhook и recurring events не входят
+  в текущий срез.
 
-## Phase 4
+## Инфраструктура и безопасность
 
-- Кандидат из свободного текста сохраняется в `SourceMessage` до подтверждения.
-- Telegram показывает inline-кнопки «Создать / Изменить / Игнорировать».
-- «Создать» создаёт задачу с исходным сообщением и idempotency key; повторное нажатие безопасно.
-- «Игнорировать» помечает кандидат как `IGNORED`.
-- «Изменить» переводит кандидата в режим ожидания и обновляет его следующим сообщением.
-- «Изменить» у созданной задачи также ожидает следующий текст и обновляет задачу без показа UUID.
-- Карточка задачи показывает статус, срок, приоритет, тип, исполнителя и описание.
-- Кнопки позволяют отдельно изменить название, срок и статус; внутренние UUID скрыты из обычных списков.
-- Добавлен отдельный статус `UNKNOWN_PARTY`, отображаемый как «Исполнитель/отправитель не известен».
-- Для задач `DELEGATED/AWAITING` без распознанного имени этот статус назначается автоматически.
-- Кнопка `👤 Исполнитель` ожидает имя следующим сообщением, сохраняет/переиспользует контакт и после назначения возвращает задачу в статус «Новая».
-- История изменений сохраняется в `TaskEvent`, но показывается только по кнопке `📜 История`.
-- Отображение и ввод сроков используют `TIMEZONE`; для текущего worker настроено `Europe/Moscow`.
+- Локальный Compose проверен; PostgreSQL healthy, Alembic находится на
+  `20260812_05 (head)`.
+- `/health/live` и `/health/ready` возвращают `{"status":"ok"}`.
+- PostgreSQL backup выполняется systemd timer ежедневно в `03:15 UTC` с
+  `Persistent=true` и задержкой до 10 минут.
+- Локальные dumps имеют режим `600`, каталог backups — `700`; retention по
+  умолчанию составляет 14 дней.
+- Backup восстановлен в изолированную временную базу; live database не
+  изменялась.
+- Runtime log review не выявил Telegram URLs, Google OAuth URLs, bot tokens,
+  OAuth secrets или passwords.
+- VPS `147.45.238.131` проверен read-only: Docker и сервисы работают, UFW
+  использует default-deny, API доступен только через localhost, PostgreSQL не
+  опубликован наружу.
+- API и worker прошли controlled restart smoke test. PostgreSQL намеренно не
+  перезапускался, чтобы не расширять production interruption.
 
-## Phase 6 — reviews
+## Документация и runbooks
 
-- Утренний, вечерний и недельный read-only отчёты формируются worker только из PostgreSQL, без изменения задач.
-- Утренний отчёт по умолчанию отправляется в `07:00 Europe/Moscow`, вечерний — в `19:00`.
-- Недельный обзор отправляется в день `weekly_review_day` в вечернее время; значение `1` означает понедельник по ISO.
-- Каждый отчёт содержит inline-кнопки перехода к сегодняшним, просроченным, делегированным и ожидаемым задачам.
-- Отправка отчётов не требует комментария или подтверждения.
-- `digest_deliveries` предотвращает повторную отправку одного типа отчёта за день после рестарта worker.
+- Общий setup и обзор возможностей: [`README.md`](../../README.md).
+- API, архитектура и схема БД: `Posts/ai-secretary-v1.0-dev-pack/reviewed/`.
+- Runbook для `AWAITING` follow-up:
+  [`docs/awaiting-follow-up.md`](../awaiting-follow-up.md).
+- Runbook переноса на другой сервер:
+  [`docs/migration-runbook.md`](../migration-runbook.md).
+- Draft концепции следующего product/research этапа:
+  [`docs/product-concept.md`](../product-concept.md).
+- Backup units и скрипт: `ops/ai-secretary-backup.*`.
+- Решения и ограничения: [`DECISIONS.md`](../../DECISIONS.md).
 
-## Phase 5 — reminder engine
+## Оставшиеся ограничения
 
-- Реализована детерминированная policy для P1/P2/P3/P4 по срокам задачи.
-- Worker планирует reminders, не создавая дубли; изменение срока отменяет старые policy-reminders.
-- Доставка учитывает quiet hours `22:00–07:00` и переносит напоминание на окончание тихих часов.
-- Ошибки Telegram получают retry с backoff и завершаются статусом `FAILED` после трёх попыток.
-- Просроченные задачи получают overdue reminders по policy; ручная кнопка `🔔 Напомнить` идемпотентна.
-- Кнопка `😴 Отложить` и `POST /tasks/{id}/snooze` переносят активные reminders.
-
-## Инфраструктурное условие
-
-- OpenClaw `gateway.http.endpoints.chatCompletions.enabled` включён.
-- Gateway привязан к `172.18.0.1` — Docker bridge проекта, не к wildcard-интерфейсам.
-- UFW разрешает только `172.18.0.0/16 -> 172.18.0.1:18789/tcp`.
-- Worker получает `OPENCLAW_API_KEY` runtime-only из Gateway token; token не записан в Git.
-- Authenticated `/v1/models` из worker отвечает `200`; реальный parser smoke test прошёл.
-- При пересоздании worker нужно снова передавать token через окружение, если он не добавлен вручную в локальный `.env`.
-
-## Phase 7 — Gmail Read Integration
-
-- Добавлен read-only Gmail REST adapter с OAuth `gmail.readonly`; Gmail API write methods не используются.
-- OAuth access/refresh tokens сохраняются только в зашифрованном виде через Fernet.
-- Добавлены `/integrations/gmail/authorize`, `/integrations/gmail/callback` и `/integrations/gmail/status`.
-- Polling хранит письма в `SourceMessage` с уникальностью `(user_id, GMAIL, message_id)`.
-- Реализованы фильтры VIP/TRUSTED/NORMAL/IGNORE, blocklist/allowlist и игнорирование newsletters по умолчанию.
-- Письмо проходит LLM classification/extraction и становится Telegram candidate preview; задача создаётся только после подтверждения.
-- Повторный poll не создаёт duplicate candidate/source; acceptance suite покрывает письмо «направить документы до 14 августа».
-- Код и миграция готовы локально; применение live-образов отложено из-за Docker Hub `429 Too Many Requests`.
+- Backups пока хранятся только локально на VPS.
+- Offsite encrypted replication не настроена.
+- Backup failure alerting не настроено.
+- Отдельная предыдущая ошибка foreign-key для invalid assignee contact
+  присутствовала в 24-часовом окне логов; при повторении её нужно расследовать.
 
 ## Следующие шаги
 
-1. Настроить Google OAuth client, `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET` и Fernet `TOKEN_ENCRYPTION_KEY`.
-2. Применить миграцию `20260812_05_gmail_read` после успешной сборки Docker-образов.
-3. Открыть `/integrations/gmail/authorize`, завершить OAuth и проверить тестовое письмо через Telegram.
-4. Проверить повторный poll и фильтры sender/newsletter.
-5. После live-проверки перейти к Phase 8: Google Calendar.
+1. Выбрать offsite storage, схему шифрования и retention policy.
+2. Добавить alerting при failed backup или пропущенном timer run.
+3. При необходимости оформить отдельный production deployment runbook с
+   матрицей `.env`, процедурой миграций, rollback и disaster recovery.

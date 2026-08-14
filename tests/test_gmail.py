@@ -11,6 +11,7 @@ from app.integrations.gmail.service import (
     GmailInboxService,
     gmail_filter_decision,
 )
+from app.integrations.telegram.bot import TelegramBot
 from app.llm.schemas import (
     ClassificationResult,
     MessageClassification,
@@ -19,8 +20,16 @@ from app.llm.schemas import (
     TaskExtractionResult,
 )
 from app.llm.service import LLMService
-from app.tasks.models import IntegrationAccount, IntegrationProvider, UserSettings
+from app.tasks.models import (
+    IntegrationAccount,
+    IntegrationProvider,
+    Task,
+    TaskEvent,
+    TaskSource,
+    UserSettings,
+)
 from app.tasks.service import TaskService
+from sqlalchemy import select
 
 
 def test_gmail_oauth_state_is_signed_and_short_lived() -> None:
@@ -69,6 +78,21 @@ class FakeLLM:
                 ),
             ),
         )
+
+
+class FakeTelegramConfirmationClient:
+    def __init__(self) -> None:
+        self.callbacks: list[tuple[str, str]] = []
+        self.edited: list[str] = []
+
+    async def answer_callback_query(self, callback_query_id: str, text: str) -> None:
+        self.callbacks.append((callback_query_id, text))
+
+    async def edit_message_text(
+        self, chat_id: int, message_id: int, text: str, reply_markup=None
+    ) -> dict[str, Any]:
+        self.edited.append(text)
+        return {"chat": {"id": chat_id}, "message_id": message_id, "text": text}
 
 
 def gmail_message() -> GmailMessage:
@@ -164,3 +188,76 @@ async def test_gmail_poll_stores_candidate_and_is_idempotent() -> None:
         assert source is not None
         assert source.processing_status == "PROCESSED"
         assert source.extra["candidate"]["title"] == "Направить документы"
+
+
+@pytest.mark.asyncio
+async def test_gmail_candidate_confirmation_creates_linked_task() -> None:
+    async with session_factory() as session:
+        user = await TaskService(session).ensure_user()
+        account = IntegrationAccount(
+            user_id=user.id,
+            provider=IntegrationProvider.GMAIL,
+            access_token_encrypted="encrypted",
+        )
+        session.add(account)
+        settings = await session.get(UserSettings, user.id)
+        assert settings is not None
+        await session.commit()
+        await session.refresh(account)
+
+    notifications: list[tuple[UUID, TaskCandidate]] = []
+
+    async def notify(source_id: UUID, candidate: TaskCandidate) -> None:
+        notifications.append((source_id, candidate))
+
+    result = await GmailInboxService(session_factory).sync_account(
+        account,
+        cast(Any, FakeGmailClient(gmail_message())),
+        cast(LLMService, FakeLLM()),
+        notify,
+        now=datetime(2026, 8, 12, 13, 0, tzinfo=UTC),
+    )
+    assert result.candidates == 1
+    source_id, candidate = notifications[0]
+
+    async with session_factory() as session:
+        before_confirmation = await session.scalar(
+            select(Task)
+            .join(TaskSource, TaskSource.task_id == Task.id)
+            .where(TaskSource.source_message_id == source_id)
+        )
+    assert before_confirmation is None
+
+    client = FakeTelegramConfirmationClient()
+    bot = TelegramBot(client, session_factory, 42)
+    await bot._handle_callback(
+        {
+            "id": "gmail-confirm-1",
+            "from": {"id": 42},
+            "data": f"candidate:create:{source_id}",
+            "message": {"message_id": 1, "chat": {"id": 100}},
+        }
+    )
+
+    async with session_factory() as session:
+        created = await session.scalar(
+            select(Task)
+            .join(TaskSource, TaskSource.task_id == Task.id)
+            .where(TaskSource.source_message_id == source_id)
+        )
+        assert created is not None
+        source = await TaskService(session).get_source_message(source_id)
+        events = list(
+            (
+                await session.scalars(
+                    select(TaskEvent).where(TaskEvent.task_id == created.id)
+                )
+            ).all()
+        )
+
+    assert created.title == candidate.title
+    assert created.due_date.isoformat() == "2026-08-14"
+    assert source.extra["confirmed"] is True
+    assert "TASK_CREATED" in {event.event_type for event in events}
+    assert client.callbacks[-1] == ("gmail-confirm-1", "Задача создана")
+    assert "Направить документы" in client.edited[-1]

@@ -8,8 +8,17 @@ from app.db.session import session_factory
 from app.integrations.telegram.bot import TelegramBot
 from app.integrations.telegram.client import TelegramClientProtocol
 from app.llm.schemas import MessageClassification, SearchDateFilter, SearchFilters, TaskCandidate
-from app.tasks.models import Contact, Task, TaskEvent, TaskStatus, TaskType
-from app.tasks.schemas import TaskCreate
+from app.tasks.models import (
+    Contact,
+    Reminder,
+    ReminderStatus,
+    Task,
+    TaskEvent,
+    TaskSource,
+    TaskStatus,
+    TaskType,
+)
+from app.tasks.schemas import SourceMessageCreate, TaskCreate
 from app.tasks.service import TaskService
 from sqlalchemy import select
 
@@ -276,6 +285,138 @@ async def test_assignee_button_assigns_contact_and_clears_unknown_party_status()
     assert refreshed.assignee_contact_id == contact.id
     assert refreshed.extra["assignee_name"] == "Сергей"
     assert "Задача изменена" in client.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_followup_actions_snooze_then_complete_awaiting_task() -> None:
+    client = FakeTelegramClient()
+    async with session_factory() as session:
+        task = await TaskService(session).create(
+            TaskCreate(
+                title="Получить договор",
+                task_type=TaskType.AWAITING,
+                due_at=datetime(2026, 8, 12, 10, 0, tzinfo=UTC),
+                idempotency_key=f"followup-actions-{uuid4()}",
+            )
+        )
+
+    bot = TelegramBot(client, session_factory, 42)
+    message = {"message_id": 1, "chat": {"id": 100}}
+    await bot._handle_callback(
+        {
+            "id": "followup-snooze-1",
+            "from": {"id": 42},
+            "data": f"followup:snooze:{task.id}:{task.version}",
+            "message": message,
+        }
+    )
+
+    async with session_factory() as session:
+        snoozed = await session.scalar(
+            select(Reminder).where(Reminder.dedupe_key == "telegram:followup:followup-snooze-1")
+        )
+    assert snoozed is not None
+    assert snoozed.reminder_type == "AWAITING_FOLLOW_UP"
+    assert snoozed.status == ReminderStatus.PENDING
+    assert client.callbacks[-1] == ("followup-snooze-1", "Напомню завтра")
+
+    await bot._handle_callback(
+        {
+            "id": "followup-done-1",
+            "from": {"id": 42},
+            "data": f"followup:done:{task.id}:{task.version}",
+            "message": message,
+        }
+    )
+
+    async with session_factory() as session:
+        completed = await TaskService(session).get(task.id)
+        events = list(
+            (
+                await session.scalars(
+                    select(TaskEvent).where(TaskEvent.task_id == task.id)
+                )
+            ).all()
+        )
+
+    assert completed.status == TaskStatus.DONE
+    assert "STATUS_CHANGED" in {event.event_type for event in events}
+    assert client.callbacks[-1] == ("followup-done-1", "Результат отмечен полученным")
+
+
+@pytest.mark.asyncio
+async def test_delegation_candidate_requires_confirmation_and_links_source() -> None:
+    client = FakeTelegramClient()
+    candidate = TaskCandidate(
+        task_type=TaskType.DELEGATED,
+        title="Получить расчёт от Сергея",
+        assignee_name="Сергей",
+        due_at=datetime(2026, 8, 14, 10, 0, tzinfo=UTC),
+        confidence=0.96,
+        evidence="Попросил Сергея прислать расчёт до 14 августа",
+    )
+    async with session_factory() as session:
+        service = TaskService(session)
+        source = await service.create_source_message(
+            SourceMessageCreate(
+                source_type="TELEGRAM",
+                external_id=f"delegation-e2e-{uuid4()}",
+                text="Поручил Сергею до 14 августа получить расчёт",
+            )
+        )
+        source = await service.save_source_candidate(
+            source.id,
+            "DELEGATION",
+            candidate.confidence,
+            candidate.model_dump(mode="json"),
+        )
+        before_confirmation = await session.scalar(
+            select(Task)
+            .join(TaskSource, TaskSource.task_id == Task.id)
+            .where(TaskSource.source_message_id == source.id)
+        )
+
+    assert before_confirmation is None
+
+    bot = TelegramBot(client, session_factory, 42)
+    await bot._handle_callback(
+        {
+            "id": "delegation-confirm-1",
+            "from": {"id": 42},
+            "data": f"candidate:create:{source.id}",
+            "message": {"message_id": 1, "chat": {"id": 100}},
+        }
+    )
+
+    async with session_factory() as session:
+        created = await session.scalar(
+            select(Task)
+            .join(TaskSource, TaskSource.task_id == Task.id)
+            .where(TaskSource.source_message_id == source.id)
+        )
+        assert created is not None
+        refreshed_source = await TaskService(session).get_source_message(source.id)
+        link = await session.scalar(
+            select(TaskSource).where(
+                TaskSource.task_id == created.id,
+                TaskSource.source_message_id == source.id,
+            )
+        )
+        events = list(
+            (
+                await session.scalars(
+                    select(TaskEvent).where(TaskEvent.task_id == created.id)
+                )
+            ).all()
+        )
+
+    assert created.task_type == TaskType.DELEGATED
+    assert created.status == TaskStatus.NEW
+    assert created.extra["assignee_name"] == "Сергей"
+    assert link is not None
+    assert refreshed_source.extra["confirmed"] is True
+    assert "TASK_CREATED" in {event.event_type for event in events}
+    assert client.callbacks[-1] == ("delegation-confirm-1", "Задача создана")
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,11 @@ from app.integrations.telegram.client import (
     TelegramAuthenticationError,
     TelegramClientProtocol,
 )
-from app.jobs.reminders import create_manual_reminder, snooze_task_reminders
+from app.jobs.reminders import (
+    create_follow_up_reminder,
+    create_manual_reminder,
+    snooze_task_reminders,
+)
 from app.llm.provider import LLMProviderError
 from app.llm.schemas import (
     MessageClassification,
@@ -543,6 +547,9 @@ class TelegramBot:
         if len(parts) == 3 and parts[0] == "candidate":
             await self._handle_candidate_callback(callback, parts[1], parts[2])
             return
+        if len(parts) == 4 and parts[0] == "followup":
+            await self._handle_followup_callback(callback, parts[1], parts[2], parts[3])
+            return
         if len(parts) != 4 or parts[0] != "task":
             await self.client.answer_callback_query(callback_id, "Неизвестное действие")
             return
@@ -666,6 +673,57 @@ class TelegramBot:
                 self._format_tasks("Задача обновлена", [task], self.timezone),
                 self._keyboard([task]),
             )
+
+    async def _handle_followup_callback(
+        self,
+        callback: Mapping[str, Any],
+        action: str,
+        task_id_text: str,
+        version_text: str,
+    ) -> None:
+        callback_id = str(callback.get("id", ""))
+        message = callback.get("message") or {}
+        chat_id = self._chat_id(message)
+        try:
+            task_id = UUID(task_id_text)
+            version = int(version_text)
+        except ValueError:
+            await self.client.answer_callback_query(callback_id, "Некорректная задача")
+            return
+        operation_key = f"telegram:followup:{callback_id}"
+        try:
+            async with self.session_factory() as session:
+                service = TaskService(session)
+                task = await service.get(task_id)
+                if TaskType(task.task_type) != TaskType.AWAITING:
+                    raise ValueError("задача больше не находится в ожидании")
+                if action == "done":
+                    task = await service.complete(task_id, operation_key, version)
+                    notice = "Результат отмечен полученным"
+                    text = self._format_tasks("Ожидание закрыто", [task], self.timezone)
+                elif action == "snooze":
+                    await create_follow_up_reminder(
+                        session,
+                        task,
+                        datetime.now(UTC) + timedelta(days=1),
+                        operation_key,
+                    )
+                    notice = "Напомню завтра"
+                    text = "⏰ Follow-up перенесён на завтра."
+                else:
+                    raise ValueError("неизвестное действие follow-up")
+        except (
+            TaskNotFoundError,
+            VersionConflictError,
+            InvalidTaskTransitionError,
+            ValueError,
+        ) as exc:
+            await self.client.answer_callback_query(callback_id, f"Не выполнено: {exc}")
+            return
+        await self.client.answer_callback_query(callback_id, notice)
+        message_id = message.get("message_id")
+        if isinstance(message_id, int):
+            await self.client.edit_message_text(chat_id, message_id, text)
 
     async def _handle_digest_callback(
         self, callback: Mapping[str, Any], action: str
