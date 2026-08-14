@@ -55,6 +55,9 @@ For a full server migration with a final consistent dump, Telegram polling
 cutover, OAuth callback updates, validation and rollback, see
 [`docs/migration-runbook.md`](docs/migration-runbook.md).
 
+Unapproved project proposals are kept in [`docs/proposals/`](docs/proposals/).
+After approval, move the document into the appropriate section of `docs/`.
+
 Task Core provides durable tasks with statuses, priorities, deadlines and sources. Create operations are idempotent by `idempotency_key`; state-changing operations require `Idempotency-Key` and append an audit event in the same transaction.
 
 Endpoints: `POST /tasks`, `GET /tasks`, `GET /tasks/{id}`, `PATCH /tasks/{id}` and `POST /tasks/{id}/complete`. Task endpoints require `Authorization: Bearer $INTERNAL_API_TOKEN`.
