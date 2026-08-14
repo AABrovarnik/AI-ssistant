@@ -63,8 +63,8 @@
 
 ## Инфраструктура и безопасность
 
-- Локальный Compose проверен; PostgreSQL healthy, Alembic находится на
-  `20260812_05 (head)`.
+- Локальный Compose проверен; production PostgreSQL healthy, Alembic находится
+  на `20260814_06 (head)` после деплоя dashboard.
 - `/health/live` и `/health/ready` возвращают `{"status":"ok"}`.
 - PostgreSQL backup выполняется systemd timer ежедневно в `03:15 UTC` с
   `Persistent=true` и задержкой до 10 минут.
@@ -79,6 +79,9 @@
   опубликован наружу.
 - API и worker прошли controlled restart smoke test. PostgreSQL намеренно не
   перезапускался, чтобы не расширять production interruption.
+- Dashboard production smoke test пройден: unauthenticated API возвращает `401`,
+  authenticated overview API и web dashboard возвращают `200`. API доступен на
+  VPS через `127.0.0.1:8000`; для браузера нужен SSH tunnel или reverse proxy.
 
 ## Документация и runbooks
 

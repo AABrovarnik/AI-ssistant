@@ -140,6 +140,16 @@ Implement the approved owner-only read-only dashboard described in
   authenticated production smoke check remain deployment steps, not local code
   blockers.
 
+### Production deployment result — 2026-08-14
+
+- Built and recreated the `api` and `worker` services on VPS `147.45.238.131`.
+- Alembic is at `20260814_06 (head)`; PostgreSQL remained healthy.
+- `/health/live` and `/health/ready` returned `{"status":"ok"}`.
+- Unauthenticated dashboard API returned `401`; authenticated overview API and
+  web dashboard returned `200`.
+- The API is bound to `127.0.0.1:8000` on the VPS; public browser access still
+  requires the existing access path or an SSH tunnel/reverse proxy.
+
 ### Assumptions
 
 - The existing deterministic `SYSTEM_USER_ID` remains the owner scope for the
