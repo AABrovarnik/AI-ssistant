@@ -13,7 +13,10 @@
 - Phase 1–9 завершены, включая E2E-hardening для задач, делегаций, Gmail,
   reminders и `AWAITING` follow-up.
 - Phase 10 по безопасности и эксплуатации завершена.
-- Полный локальный набор тестов: `55 passed, 6 skipped`.
+- Локальный SQLite-набор тестов: `59 passed`; 6 PostgreSQL-тестов остаются opt-in skips.
+- Dashboard Phase 12 реализован локально: approved ТЗ, migration `20260814_06`,
+  durable poll runs/candidates, API и первый Jinja2/HTMX UI. Production migration
+  and browser deployment smoke are still pending.
 - Reviewed development pack хранится в
   `Posts/ai-secretary-v1.0-dev-pack/reviewed/`.
 
@@ -89,6 +92,7 @@
   [`docs/product-concept.md`](../product-concept.md).
 - Backup units и скрипт: `ops/ai-secretary-backup.*`.
 - Решения и ограничения: [`DECISIONS.md`](../../DECISIONS.md).
+- Утверждённое ТЗ dashboard: [`docs/dashboard-spec.md`](../dashboard-spec.md).
 
 ## Оставшиеся ограничения
 

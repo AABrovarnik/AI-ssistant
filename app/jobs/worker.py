@@ -6,7 +6,7 @@ from app.core.logging import configure_logging
 from app.db.session import session_factory
 from app.integrations.telegram import TelegramBot, TelegramClient
 from app.jobs.digest import run_digest_loop
-from app.jobs.gmail import run_gmail_loop
+from app.jobs.gmail import force_poll_gmail, run_gmail_loop
 from app.jobs.reminders import run_reminder_loop
 from app.llm import LLMService, OpenAICompatibleProvider
 
@@ -34,12 +34,24 @@ async def run() -> None:
                 settings.llm_temperature,
                 settings.timezone,
             )
+        gmail_poll_callback = None
+        if llm_service is not None:
+            async def gmail_poll_callback() -> int:
+                return await force_poll_gmail(
+                    session_factory,
+                    client,
+                    settings.telegram_owner_user_id,
+                    llm_service,
+                    settings,
+                )
+
         bot = TelegramBot(
             client,
             session_factory,
             settings.telegram_owner_user_id,
             llm_service,
             settings.timezone,
+            gmail_poll=gmail_poll_callback,
         )
         digest_task = asyncio.create_task(
             run_digest_loop(

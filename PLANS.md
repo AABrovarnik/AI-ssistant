@@ -60,8 +60,98 @@ The remaining project work is the separate security/operations and production ch
 - `/health/live` and `/health/ready` returned `{"status":"ok"}` from the API container and host port.
 - Backup restored successfully into `ai_secretary_restore_check`; migration, table count, and key row counts matched the live database. The temporary database was removed; the live database was left intact.
 - Runtime log scan found no Telegram URLs, Google OAuth URLs, or bot-token-shaped values. A prior foreign-key error for an invalid assignee contact remains in the 24-hour log window and should be investigated separately if it recurs.
-- Full suite: `55 passed, 6 skipped`; `git diff --check` passed.
+- Local suite: `57 passed, 6 PostgreSQL-opt-in skips`; `git diff --check` passed.
 - VPS `147.45.238.131` (`ams-1-vm-cmsa`) verified read-only: Ubuntu 24.04, Docker enabled/active, all services running with `unless-stopped`, health endpoints OK, UFW default-deny, API bound to localhost, and PostgreSQL not publicly exposed.
 - Production `.env` is mode `600` and untracked. The PostgreSQL backup systemd timer is enabled and its first run succeeded. A real PostgreSQL restart was not exercised to avoid widening the interruption; API and worker restart behavior was verified.
 - Installed `ai-secretary-backup.service` and `ai-secretary-backup.timer`; the first run succeeded and its dump restored into an isolated temporary database with matching control counts. API and worker restart smoke test passed; PostgreSQL was intentionally not restarted.
 - Remaining resilience caveat: backups are local-only; no offsite copy or backup alerting is configured.
+
+## Phase 11 verification result — 2026-08-14
+
+- `agent-work-review` and `production-closure-review` passed `quick_validate.py` and were installed in `/root/.codex/skills` from the versioned `skills/` copies.
+- `.githooks/pre-commit`, `.githooks/pre-push`, `ops/install-git-hooks.sh`, and `ops/post-deploy-smoke.sh` passed `bash -n`.
+- The full pre-push hook passed before the Telegram command change: `56 passed, 6 skipped`; the current full suite is `57 passed, 6 skipped`.
+- The post-deploy smoke script returned healthy API checks and Gmail `CONNECTED` with a recent `last_polled_at`; it printed no credentials.
+- A Calendar test resource leak discovered by hook verification was fixed by closing its async HTTP client.
+
+## Phase 11 — Agent activity review and operational guardrails
+
+Objective:
+
+- Make agent self-review and runtime-closure checks repeatable for future multi-step work.
+
+Steps:
+
+- [completed] Add `agent-work-review` skill for independent evidence-based review of agent activity.
+- [completed] Add `production-closure-review` skill for runtime/configuration/deployment closure.
+- [completed] Add versioned Git hooks for staged secret checks, formatting/tests, and pre-push verification.
+- [completed] Add a safe post-deploy smoke script for health and integration status without printing secrets.
+- [completed] Add the owner-only Telegram `/gmail_check` command and `/gmail_poll` alias.
+- [completed] Validate skills, hooks, scripts, and update project memory with known limitations.
+
+Non-goals:
+
+- Do not make hooks send Telegram messages or mutate production data automatically.
+- Do not treat a self-review as access to hidden model reasoning; review only observable artifacts.
+
+Verification:
+
+- Validate each skill with `quick_validate.py`.
+- Run hook scripts in a temporary copy or with controlled staged changes.
+- Run the project test/lint commands and `git diff --check`.
+
+Rollback:
+
+- Remove the new project-local skills/hooks and restore the previous `PLANS.md` section; no application data is changed by this phase.
+
+## Phase 12 — Dashboard implementation
+
+### Objective
+
+Implement the approved owner-only read-only dashboard described in
+[`docs/dashboard-spec.md`](docs/dashboard-spec.md) for the Gmail → LLM → Telegram
+→ Task funnel.
+
+### Scope
+
+- Add durable `integration_poll_runs` and normalized `task_candidates` data.
+- Record processing, notification and decision timestamps without exposing secrets.
+- Add owner-scoped dashboard aggregates, timeseries and drill-down API endpoints.
+- Add a lightweight FastAPI/Jinja2/HTMX web UI in the existing service.
+- Preserve the read-only boundary; manual Gmail polling remains an explicit
+  operator action outside the analytical API.
+
+### Steps
+
+- [completed] Move the approved specification into project documentation and
+  record architecture decisions.
+- [completed] Add migration/models/indexes for poll runs and candidates.
+- [completed] Persist polling outcomes and candidate lifecycle transitions.
+- [completed] Implement dashboard query services and owner-scoped API.
+- [completed] Implement overview, funnel, health and drill-down UI.
+- [completed] Add focused tests, run the full suite and verify migration/rollback.
+
+### Local implementation result — 2026-08-14
+
+- `59 passed, 6 PostgreSQL-opt-in skips`.
+- Ruff, mypy and `git diff --check` passed.
+- PostgreSQL offline migration generation for `20260814_06` passed.
+- Applying the migration to the deployment PostgreSQL and performing the
+  authenticated production smoke check remain deployment steps, not local code
+  blockers.
+
+### Assumptions
+
+- The existing deterministic `SYSTEM_USER_ID` remains the owner scope for the
+  single-user product.
+- The existing internal bearer authentication protects the first API slice;
+  browser session/reverse-proxy auth is a follow-up before public exposure.
+- Historical rows without lifecycle timestamps are reported as partial data.
+
+### Verification and rollback
+
+- Verification: focused dashboard tests, full pytest suite, `git diff --check`,
+  migration upgrade/downgrade or isolated database check, and authenticated API
+  smoke requests.
+- Rollback: stop serving dashboard routes and downgrade only the dashboard
+  migration; do not alter existing Gmail messages or tasks.

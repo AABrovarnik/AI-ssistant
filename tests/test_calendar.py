@@ -38,9 +38,13 @@ class FakeCalendarClient:
         self.deleted.append(event_id)
 
 
-def test_calendar_oauth_url_uses_calendar_events_scope() -> None:
+@pytest.mark.asyncio
+async def test_calendar_oauth_url_uses_calendar_events_scope() -> None:
     client = CalendarOAuthClient("client", "secret", "http://localhost/callback")
-    query = parse_qs(urlparse(client.authorization_url("state-1")).query)
+    try:
+        query = parse_qs(urlparse(client.authorization_url("state-1")).query)
+    finally:
+        await client.close()
 
     assert query["scope"] == [CALENDAR_SCOPE]
     assert query["redirect_uri"] == ["http://localhost/callback"]

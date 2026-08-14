@@ -12,6 +12,7 @@ from app.integrations.gmail.service import (
     gmail_filter_decision,
 )
 from app.integrations.telegram.bot import TelegramBot
+from app.jobs.gmail import poll_gmail_accounts
 from app.llm.schemas import (
     ClassificationResult,
     MessageClassification,
@@ -22,7 +23,9 @@ from app.llm.schemas import (
 from app.llm.service import LLMService
 from app.tasks.models import (
     IntegrationAccount,
+    IntegrationPollRun,
     IntegrationProvider,
+    PollRunStatus,
     Task,
     TaskEvent,
     TaskSource,
@@ -55,6 +58,9 @@ class FakeGmailClient:
         assert message_id == self.message.message_id
         self.get_calls += 1
         return self.message
+
+    async def close(self) -> None:
+        return None
 
 
 class FakeLLM:
@@ -93,6 +99,25 @@ class FakeTelegramConfirmationClient:
     ) -> dict[str, Any]:
         self.edited.append(text)
         return {"chat": {"id": chat_id}, "message_id": message_id, "text": text}
+
+
+class FakeTelegramNotificationClient:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    async def send_message(self, chat_id: int, text: str, reply_markup=None) -> dict[str, Any]:
+        self.messages.append(text)
+        return {"chat": {"id": chat_id}, "message_id": 1, "text": text}
+
+
+class FakeTokenCipher:
+    def decrypt(self, value: str) -> str:
+        return value
+
+
+class FakeOAuthClient:
+    async def refresh(self, refresh_token: str) -> Any:
+        raise AssertionError("token refresh should not be needed")
 
 
 def gmail_message() -> GmailMessage:
@@ -188,6 +213,78 @@ async def test_gmail_poll_stores_candidate_and_is_idempotent() -> None:
         assert source is not None
         assert source.processing_status == "PROCESSED"
         assert source.extra["candidate"]["title"] == "Направить документы"
+        candidate_record = await service.get_task_candidate(source.id)
+        assert candidate_record is not None
+        assert candidate_record.status == "NOTIFIED"
+
+
+@pytest.mark.asyncio
+async def test_forced_gmail_poll_ignores_account_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.jobs.gmail as gmail_job
+    from app.core.config import Settings
+
+    async with session_factory() as session:
+        user = await TaskService(session).ensure_user()
+        account = IntegrationAccount(
+            user_id=user.id,
+            provider=IntegrationProvider.GMAIL,
+            access_token_encrypted="access-token",
+            last_polled_at=datetime(2026, 8, 12, 12, 59, tzinfo=UTC),
+        )
+        session.add(account)
+        await session.commit()
+
+    client = FakeGmailClient(gmail_message())
+    monkeypatch.setattr(gmail_job, "GmailAPIClient", lambda access_token: client)
+    settings = Settings(
+        gmail_enabled=True,
+        gmail_client_id="client-id",
+        gmail_client_secret="client-secret",
+        token_encryption_key="unused-by-fake-cipher",
+    )
+    telegram = FakeTelegramNotificationClient()
+    llm = cast(LLMService, FakeLLM())
+
+    skipped = await poll_gmail_accounts(
+        session_factory,
+        telegram,
+        42,
+        llm,
+        settings,
+        cast(Any, FakeTokenCipher()),
+        cast(Any, FakeOAuthClient()),
+        now=datetime(2026, 8, 12, 13, 0, tzinfo=UTC),
+    )
+    forced = await poll_gmail_accounts(
+        session_factory,
+        telegram,
+        42,
+        llm,
+        settings,
+        cast(Any, FakeTokenCipher()),
+        cast(Any, FakeOAuthClient()),
+        now=datetime(2026, 8, 12, 13, 0, tzinfo=UTC),
+        force=True,
+    )
+
+    assert skipped == 0
+    assert forced == 1
+    assert len(telegram.messages) == 1
+
+    async with session_factory() as session:
+        runs = list(
+            (
+                await session.scalars(
+                    select(IntegrationPollRun).where(
+                        IntegrationPollRun.user_id == user.id,
+                    )
+                )
+            ).all()
+        )
+    assert len(runs) == 1
+    assert runs[0].status == PollRunStatus.SUCCEEDED
+    assert runs[0].candidate_count == 1
+    assert runs[0].notified_count == 1
 
 
 @pytest.mark.asyncio

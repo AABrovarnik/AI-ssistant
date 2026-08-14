@@ -106,6 +106,27 @@ class ProcessingStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class CandidateStatus(StrEnum):
+    PENDING = "PENDING"
+    NOTIFIED = "NOTIFIED"
+    CONFIRMED = "CONFIRMED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+
+
+class PollRunTrigger(StrEnum):
+    SCHEDULED = "scheduled"
+    MANUAL_API = "manual_api"
+    TELEGRAM = "telegram"
+
+
+class PollRunStatus(StrEnum):
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    PARTIAL = "PARTIAL"
+    FAILED = "FAILED"
+
+
 class ReminderStatus(StrEnum):
     PENDING = "PENDING"
     SENT = "SENT"
@@ -229,6 +250,10 @@ class SourceMessage(Base):
     __tablename__ = "source_messages"
     __table_args__ = (
         UniqueConstraint("user_id", "source_type", "external_id", name="uq_source_external"),
+        Index("ix_source_messages_user_source_received", "user_id", "source_type", "received_at"),
+        Index(
+            "ix_source_messages_user_status_created", "user_id", "processing_status", "created_at"
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -262,6 +287,7 @@ class TaskSource(Base):
     __tablename__ = "task_sources"
     __table_args__ = (
         UniqueConstraint("task_id", "source_message_id", "relation", name="uq_task_source"),
+        Index("ix_task_sources_source_message", "source_message_id"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -277,7 +303,10 @@ class TaskSource(Base):
 
 class TaskEvent(Base):
     __tablename__ = "task_events"
-    __table_args__ = (Index("ix_task_events_task_created", "task_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_task_events_task_created", "task_id", "created_at"),
+        Index("ix_task_events_user_created", "user_id", "created_at"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
@@ -383,6 +412,64 @@ class IntegrationAccount(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class IntegrationPollRun(Base):
+    __tablename__ = "integration_poll_runs"
+    __table_args__ = (
+        Index("ix_poll_runs_account_started", "account_id", "started_at"),
+        Index("ix_poll_runs_user_started", "user_id", "started_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    account_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("integration_accounts.id", ondelete="SET NULL"), nullable=True
+    )
+    trigger: Mapped[PollRunTrigger] = mapped_column(String(32), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[PollRunStatus] = mapped_column(String(32), nullable=False)
+    fetched_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    stored_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    processed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ignored_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    candidate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    notified_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+
+
+class TaskCandidate(Base):
+    __tablename__ = "task_candidates"
+    __table_args__ = (
+        UniqueConstraint("source_message_id", name="uq_task_candidates_source_message"),
+        Index("ix_task_candidates_user_status_detected", "user_id", "status", "detected_at"),
+        Index("ix_task_candidates_user_detected", "user_id", "detected_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    source_message_id: Mapped[UUID] = mapped_column(
+        ForeignKey("source_messages.id", ondelete="CASCADE"), nullable=False
+    )
+    classification: Mapped[str] = mapped_column(String(64), nullable=False)
+    confidence: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[CandidateStatus] = mapped_column(
+        String(32), default=CandidateStatus.PENDING, nullable=False
+    )
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    notification_error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    task_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
 
 

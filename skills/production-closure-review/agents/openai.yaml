@@ -1,0 +1,4 @@
+interface:
+  display_name: "Production Closure Review"
+  short_description: "Verify runtime and deployment closure"
+  default_prompt: "Use $production-closure-review to verify runtime configuration, health, integrations, recovery, and deployment evidence."

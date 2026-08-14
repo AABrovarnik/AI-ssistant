@@ -56,13 +56,17 @@ class FakeTelegramClient:
 
 
 def make_bot(
-    client: FakeTelegramClient, owner_user_id: int = 42, timezone: str = "UTC"
+    client: FakeTelegramClient,
+    owner_user_id: int = 42,
+    timezone: str = "UTC",
+    gmail_poll=None,
 ) -> TelegramBot:
     return TelegramBot(
         cast(TelegramClientProtocol, client),
         cast(Any, None),
         owner_user_id,
         timezone=timezone,
+        gmail_poll=gmail_poll,
     )
 
 
@@ -82,6 +86,26 @@ async def test_owner_can_use_help_and_start_commands() -> None:
     assert "AI Secretary готов" in client.messages[0][1]
     assert "/new текст" in client.messages[1][1]
     assert "/waiting" in client.messages[1][1]
+
+
+@pytest.mark.asyncio
+async def test_owner_can_force_gmail_check_from_telegram() -> None:
+    client = FakeTelegramClient()
+    calls = 0
+
+    async def gmail_poll() -> int:
+        nonlocal calls
+        calls += 1
+        return 2
+
+    bot = make_bot(client, gmail_poll=gmail_poll)
+    await bot.handle_update(
+        {"message": {"from": {"id": 42}, "chat": {"id": 100}, "text": "/gmail_check"}}
+    )
+
+    assert calls == 1
+    assert client.messages[-2][1] == "Проверяю почту…"
+    assert "Новых кандидатов: 2" in client.messages[-1][1]
 
 
 @pytest.mark.asyncio

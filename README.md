@@ -55,8 +55,22 @@ For a full server migration with a final consistent dump, Telegram polling
 cutover, OAuth callback updates, validation and rollback, see
 [`docs/migration-runbook.md`](docs/migration-runbook.md).
 
+Project verification guardrails are available in `skills/` and `.githooks/`.
+Enable the versioned Git hooks with:
+
+```bash
+ops/install-git-hooks.sh
+```
+
+Run the read-only post-deploy smoke check with `INTERNAL_API_TOKEN` set:
+
+```bash
+INTERNAL_API_TOKEN=... ops/post-deploy-smoke.sh
+```
+
 Unapproved project proposals are kept in [`docs/proposals/`](docs/proposals/).
 After approval, move the document into the appropriate section of `docs/`.
+The approved dashboard specification is [`docs/dashboard-spec.md`](docs/dashboard-spec.md).
 
 Task Core provides durable tasks with statuses, priorities, deadlines and sources. Create operations are idempotent by `idempotency_key`; state-changing operations require `Idempotency-Key` and append an audit event in the same transaction.
 
@@ -96,6 +110,11 @@ into candidates, and shown in Telegram for confirmation. No Gmail message create
 a task automatically, and newsletters can be filtered through `user_settings.extra`.
 The initial and subsequent polls do not read messages before `GMAIL_START_AT`,
 which defaults to `2026-08-01T00:00:00+00:00`.
+Use `POST /integrations/gmail/poll` with the internal bearer token for an
+immediate manual poll; it bypasses the per-account polling interval and still
+only sends task candidates to Telegram for confirmation.
+The Telegram owner can run the same check with `/gmail_check` (or
+`/gmail_poll`).
 
 Google Calendar is opt-in with `GOOGLE_CALENDAR_ENABLED=true`. It reuses the
 configured Google OAuth client and stores Calendar credentials encrypted. Open

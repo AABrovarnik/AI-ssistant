@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.integrations.gmail.client import GmailClientProtocol, GmailMessage
 from app.llm.schemas import MessageClassification, TaskCandidate
 from app.llm.service import LLMParseError, LLMService
-from app.tasks.models import IntegrationAccount, ProcessingStatus, UserSettings
+from app.tasks.models import CandidateStatus, IntegrationAccount, ProcessingStatus, UserSettings
 from app.tasks.schemas import SourceMessageCreate
 from app.tasks.service import DuplicateSourceError, TaskService
 
@@ -38,6 +38,8 @@ class GmailSyncResult:
     ignored: int = 0
     candidates: int = 0
     failed: int = 0
+    processed: int = 0
+    notified: int = 0
 
 
 CandidateNotifier = Callable[[UUID, TaskCandidate], Awaitable[None]]
@@ -158,47 +160,70 @@ class GmailInboxService:
                     if decision == GmailFilterDecision.IGNORE:
                         source.processing_status = ProcessingStatus.IGNORED
                         source.error_code = "GMAIL_FILTERED"
+                        source.processed_at = current
                         result = self._increment(result, "ignored")
                         continue
                     if llm_service is None:
                         source.processing_status = ProcessingStatus.FAILED
                         source.error_code = "LLM_UNAVAILABLE"
+                        source.processed_at = current
                         result = self._increment(result, "failed")
                         continue
                     parsed = await llm_service.parse_message(
                         self._llm_text(message), current_datetime=current
                     )
                     candidate = parsed.extraction.candidate if parsed.extraction else None
-                    if (
-                        candidate is None
-                        or parsed.classification.classification
-                        not in {
-                            MessageClassification.TASK,
-                            MessageClassification.DELEGATION,
-                            MessageClassification.AWAITING,
-                        }
-                    ):
+                    if candidate is None or parsed.classification.classification not in {
+                        MessageClassification.TASK,
+                        MessageClassification.DELEGATION,
+                        MessageClassification.AWAITING,
+                    }:
                         source.processing_status = ProcessingStatus.PROCESSED
                         source.classification = parsed.classification.classification.value
                         source.confidence = parsed.classification.confidence
+                        source.processed_at = current
+                        result = self._increment(result, "processed")
                         result = self._increment(result, "ignored")
                         continue
                     source.processing_status = ProcessingStatus.PROCESSED
                     source.classification = parsed.classification.classification.value
                     source.confidence = parsed.classification.confidence
+                    source.processed_at = current
+                    await service.upsert_task_candidate(
+                        source,
+                        classification=source.classification,
+                        confidence=float(source.confidence or 0),
+                        payload=candidate.model_dump(mode="json"),
+                        detected_at=current,
+                    )
                     source.extra = {
                         **source.extra,
                         "candidate": candidate.model_dump(mode="json"),
                     }
                     result = self._increment(result, "candidates")
                     if notify_candidate is not None:
-                        await notify_candidate(source.id, candidate)
+                        try:
+                            await notify_candidate(source.id, candidate)
+                        except Exception:
+                            candidate_record = await service.get_task_candidate(source.id)
+                            if candidate_record is not None:
+                                candidate_record.notification_error = "TELEGRAM_DELIVERY_FAILED"
+                            await session.commit()
+                            raise
+                        result = self._increment(result, "notified")
+                        candidate_record = await service.get_task_candidate(source.id)
+                        if candidate_record is not None:
+                            candidate_record.status = CandidateStatus.NOTIFIED
+                            candidate_record.notified_at = current
+                            candidate_record.notification_error = None
+                    result = self._increment(result, "processed")
                 except DuplicateSourceError:
                     result = self._increment(result, "duplicates")
                 except (LLMParseError, ValueError):
-                    if existing is not None:
-                        existing.processing_status = ProcessingStatus.FAILED
-                        existing.error_code = "GMAIL_PROCESSING_FAILED"
+                    if source is not None:
+                        source.processing_status = ProcessingStatus.FAILED
+                        source.error_code = "GMAIL_PROCESSING_FAILED"
+                        source.processed_at = current
                     result = self._increment(result, "failed")
             current_account.last_polled_at = current
             current_account.error_message = None
@@ -214,6 +239,10 @@ class GmailInboxService:
         minimum_received_at: datetime | None = DEFAULT_GMAIL_START_AT,
     ) -> str:
         poll_from = last_polled_at
+        if poll_from is not None and poll_from.tzinfo is None:
+            poll_from = poll_from.replace(tzinfo=UTC)
+        if minimum_received_at is not None and minimum_received_at.tzinfo is None:
+            minimum_received_at = minimum_received_at.replace(tzinfo=UTC)
         if minimum_received_at is not None and (
             poll_from is None or poll_from < minimum_received_at
         ):

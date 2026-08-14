@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI Secretary — вход</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 28rem; margin: 10vh auto; padding: 1rem; }
+      input, button { box-sizing: border-box; width: 100%; padding: .7rem; margin-top: .5rem; }
+      button { cursor: pointer; }
+      #error { color: #a00; min-height: 1.5rem; }
+    </style>
+  </head>
+  <body>
+    <h1>AI Secretary</h1>
+    <p>Owner dashboard</p>
+    <form id="login-form">
+      <label for="token">Internal token</label>
+      <input id="token" name="token" type="password" autocomplete="current-password" required>
+      <button type="submit">Войти</button>
+    </form>
+    <p id="error"></p>
+    <script>
+      document.getElementById('login-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const token = document.getElementById('token').value;
+        const response = await fetch('/dashboard/login', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({token})
+        });
+        if (response.ok) window.location = '/dashboard';
+        else document.getElementById('error').textContent = 'Неверный токен';
+      });
+    </script>
+  </body>
+</html>

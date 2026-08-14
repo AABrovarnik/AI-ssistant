@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -x .venv/bin/pytest ]]; then
+  .venv/bin/pytest -q
+else
+  echo "pre-push: .venv/bin/pytest is required" >&2
+  exit 1
+fi
+
+git diff --check

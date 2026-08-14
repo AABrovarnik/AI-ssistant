@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! git diff --cached --check; then
+  echo "pre-commit: whitespace errors found" >&2
+  exit 1
+fi
+
+if git diff --cached --no-ext-diff --unified=0 | rg -q -i '(api[_-]?key|secret|password|token|private[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]]{8,}'; then
+  echo "pre-commit: possible secret in staged diff; inspect without printing credentials" >&2
+  exit 1
+fi
+
+if [[ -x .venv/bin/ruff ]]; then
+  .venv/bin/ruff check app tests
+fi

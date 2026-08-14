@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI Secretary — dashboard</title>
+    <style>
+      :root { color-scheme: light; font-family: system-ui, sans-serif; }
+      body { margin: 0; background: #f4f6f8; color: #17202a; }
+      main { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+      header, section { background: white; border-radius: .7rem; padding: 1rem; margin-bottom: 1rem; }
+      header { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
+      .controls { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; }
+      input, button { padding: .5rem; }
+      button { cursor: pointer; }
+      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .7rem; }
+      .card { border: 1px solid #dfe5ea; border-radius: .5rem; padding: .7rem; }
+      .card.clickable { background: white; text-align: left; cursor: pointer; }
+      .value { font-size: 1.7rem; font-weight: 700; }
+      .muted { color: #68737d; font-size: .85rem; }
+      .funnel { display: flex; flex-wrap: wrap; gap: .5rem; }
+      .stage { border: 1px solid #b9c7d3; border-radius: .5rem; padding: .7rem; min-width: 8rem; }
+      .table-wrap { overflow-x: auto; }
+      .series-row { display: grid; grid-template-columns: 7rem 1fr 5rem; gap: .7rem; align-items: center; margin: .45rem 0; }
+      .bars { display: grid; gap: .2rem; }
+      .bar { height: .45rem; border-radius: .3rem; min-width: .1rem; }
+      .bar.messages { background: #3978c7; }
+      .bar.candidates { background: #43a56b; }
+      .bar.tasks { background: #d58b27; }
+      table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+      th, td { text-align: left; border-bottom: 1px solid #e4e8eb; padding: .55rem; vertical-align: top; }
+      .error { color: #a00; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div><h1>AI Secretary dashboard</h1><div id="freshness" class="muted"></div></div>
+        <button id="logout">Выйти</button>
+      </header>
+      <section>
+        <div class="controls">
+          <label>С <input id="from" type="date"></label>
+          <label>По <input id="to" type="date"></label>
+          <label>Timezone <input id="timezone" value="UTC"></label>
+          <button id="refresh">Обновить</button>
+        </div>
+        <p id="error" class="error"></p>
+      </section>
+      <section><h2>KPI</h2><div id="metrics" class="cards"></div></section>
+      <section><h2>Funnel</h2><div id="funnel" class="funnel"></div></section>
+      <section><h2>Динамика по дням</h2><div id="timeseries"></div></section>
+      <section><h2>Источники</h2><div class="controls">
+        <button data-view="messages">Письма</button>
+        <button data-view="candidates">Candidates</button>
+        <button data-view="tasks">Задачи</button>
+        <button data-view="operations">Polling runs</button>
+      </div><div id="table" class="table-wrap"></div></section>
+    </main>
+    <script>
+      const esc = (value) => String(value ?? '—').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const params = () => {
+        const p = new URLSearchParams();
+        for (const key of ['from', 'to', 'timezone']) {
+          const value = document.getElementById(key).value;
+          if (value) p.set(key, value);
+        }
+        return p;
+      };
+      const format = (value) => value ? new Date(value).toLocaleString() : '—';
+      async function loadOverview() {
+        const response = await fetch('/dashboard/overview?' + params());
+        if (!response.ok) throw new Error('Не удалось загрузить dashboard');
+        const data = await response.json();
+        document.getElementById('freshness').textContent = `Данные: ${data.data_freshness.state}; последний poll: ${format(data.data_freshness.last_successful_poll)}; качество: ${data.data_quality}`;
+        document.getElementById('metrics').innerHTML = data.metrics.map(m => `<button class="card clickable" data-view="${esc(m.drilldown.route.split('/').pop())}"><div class="muted">${esc(m.label)}</div><div class="value">${esc(m.value)}</div><div class="muted">${esc(m.definition)}</div></button>`).join('');
+        document.getElementById('funnel').innerHTML = data.funnel.map(s => `<div class="stage"><div>${esc(s.label)}</div><strong>${esc(s.value)}</strong></div>`).join('');
+        document.querySelectorAll('#metrics [data-view]').forEach(button => button.addEventListener('click', () => refresh(button.dataset.view)));
+        const seriesResponse = await fetch('/dashboard/timeseries?' + params());
+        if (!seriesResponse.ok) throw new Error('Не удалось загрузить динамику');
+        const series = await seriesResponse.json();
+        const maximum = Math.max(1, ...series.points.flatMap(point => [point.messages, point.candidates, point.tasks]));
+        document.getElementById('timeseries').innerHTML = series.points.length
+          ? series.points.map(point => `<div class="series-row"><strong>${esc(point.bucket)}</strong><div class="bars"><div class="bar messages" style="width:${point.messages / maximum * 100}%" title="Письма: ${esc(point.messages)}"></div><div class="bar candidates" style="width:${point.candidates / maximum * 100}%" title="Candidate: ${esc(point.candidates)}"></div><div class="bar tasks" style="width:${point.tasks / maximum * 100}%" title="Задачи: ${esc(point.tasks)}"></div></div><span class="muted">${esc(point.messages)} / ${esc(point.candidates)} / ${esc(point.tasks)}</span></div>`).join('')
+          : '<p class="muted">Нет данных для выбранного периода.</p>';
+      }
+      async function loadTable(view) {
+        const response = await fetch('/dashboard/' + view + '?' + params());
+        if (!response.ok) throw new Error('Не удалось загрузить список');
+        const data = await response.json();
+        const items = data.items || [];
+        if (!items.length) { document.getElementById('table').innerHTML = '<p class="muted">Нет строк для выбранных фильтров.</p>'; return; }
+        const keys = Object.keys(items[0]);
+        document.getElementById('table').innerHTML = `<table><thead><tr>${keys.map(k => `<th>${esc(k)}</th>`).join('')}</tr></thead><tbody>${items.map(item => `<tr>${keys.map(k => `<td>${esc(typeof item[k] === 'object' ? JSON.stringify(item[k]) : item[k])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+      }
+      async function refresh(view) {
+        document.getElementById('error').textContent = '';
+        try { await loadOverview(); if (view) await loadTable(view); }
+        catch (error) { document.getElementById('error').textContent = error.message; }
+      }
+      document.getElementById('refresh').addEventListener('click', () => refresh());
+      document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => refresh(button.dataset.view)));
+      document.getElementById('logout').addEventListener('click', async () => { await fetch('/dashboard/logout', {method: 'POST'}); window.location = '/dashboard/login'; });
+      refresh();
+    </script>
+  </body>
+</html>

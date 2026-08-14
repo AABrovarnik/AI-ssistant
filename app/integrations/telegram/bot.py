@@ -7,12 +7,13 @@ the REST transport and makes all handlers testable without Telegram or an LLM.
 import asyncio
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.integrations.telegram.client import (
@@ -33,6 +34,7 @@ from app.llm.schemas import (
 )
 from app.llm.service import LLMParseError, LLMService
 from app.tasks.models import (
+    CandidateStatus,
     DuePrecision,
     ProcessingStatus,
     Task,
@@ -40,6 +42,9 @@ from app.tasks.models import (
     TaskPriority,
     TaskStatus,
     TaskType,
+)
+from app.tasks.models import (
+    TaskCandidate as TaskCandidateRecord,
 )
 from app.tasks.schemas import SourceMessageCreate, TaskCreate, TaskUpdate
 from app.tasks.service import (
@@ -60,12 +65,14 @@ class TelegramBot:
         owner_user_id: int,
         llm_service: LLMService | None = None,
         timezone: str = "UTC",
+        gmail_poll: Callable[[], Awaitable[int]] | None = None,
     ) -> None:
         self.client = client
         self.session_factory = session_factory
         self.owner_user_id = owner_user_id
         self.llm_service = llm_service
         self.timezone = timezone
+        self.gmail_poll = gmail_poll
 
     async def handle_update(self, update: Mapping[str, Any]) -> None:
         message = update.get("message")
@@ -161,12 +168,37 @@ class TelegramBot:
                 f"Настройки\nЧасовой пояс: {user.timezone}\nЯзык: {user.language}\n"
                 "Дайджесты и напоминания настраиваются здесь в следующих итерациях.",
             )
+        elif command in {"/gmail_check", "/gmail_poll"}:
+            await self._gmail_check(chat_id)
         elif command == "/edit":
             await self._edit_task(chat_id, argument)
         elif not command.startswith("/"):
             await self._handle_natural_language(chat_id, text, message)
         else:
             await self.client.send_message(chat_id, "Неизвестная команда. Используй /help.")
+
+    async def _gmail_check(self, chat_id: int) -> None:
+        if self.gmail_poll is None:
+            await self.client.send_message(
+                chat_id,
+                "Принудительная проверка Gmail сейчас недоступна. Проверь настройки worker.",
+            )
+            return
+        await self.client.send_message(chat_id, "Проверяю почту…")
+        try:
+            candidates = await self.gmail_poll()
+        except Exception:
+            logger.exception("telegram_gmail_manual_poll_failed")
+            await self.client.send_message(
+                chat_id,
+                "Не удалось проверить почту. Проверь статус Gmail и worker в логах.",
+            )
+            return
+        await self.client.send_message(
+            chat_id,
+            f"Проверка почты завершена. Новых кандидатов: {candidates}.\n"
+            "Задачи автоматически не создавались.",
+        )
 
     async def _handle_natural_language(
         self, chat_id: int, text: str, message: Mapping[str, Any]
@@ -309,6 +341,17 @@ class TelegramBot:
                 self._format_candidate(candidate, self.timezone),
                 self._candidate_keyboard(source.id),
             )
+            async with self.session_factory() as session:
+                record = await session.scalar(
+                    select(TaskCandidateRecord).where(
+                        TaskCandidateRecord.source_message_id == source.id
+                    )
+                )
+                if record is not None:
+                    record.status = CandidateStatus.NOTIFIED
+                    record.notified_at = datetime.now(UTC)
+                    record.notification_error = None
+                    await session.commit()
             return
         if classification.classification in {
             MessageClassification.TASK_COMPLETE,
@@ -776,8 +819,13 @@ class TelegramBot:
             async with self.session_factory() as session:
                 service = TaskService(session)
                 source = await service.get_source_message(source_id)
+                candidate_record = await service.get_task_candidate(source.id, source.user_id)
                 if action == "ignore":
                     source.processing_status = ProcessingStatus.IGNORED
+                    if candidate_record is not None:
+                        candidate_record.status = CandidateStatus.REJECTED
+                        candidate_record.decided_at = datetime.now(UTC)
+                        candidate_record.decision_reason = "TELEGRAM_IGNORE"
                     await session.commit()
                     notice = "Кандидат проигнорирован"
                     task = None
@@ -825,6 +873,11 @@ class TelegramBot:
                         )
                     )
                     source.extra = {**source.extra, "confirmed": True}
+                    if candidate_record is not None:
+                        candidate_record.status = CandidateStatus.CONFIRMED
+                        candidate_record.decided_at = datetime.now(UTC)
+                        candidate_record.decision_reason = "TELEGRAM_CREATE"
+                        candidate_record.task_id = task.id
                     await session.commit()
                     notice = "Задача создана"
                 else:
@@ -1143,5 +1196,6 @@ class TelegramBot:
             "/waiting — ожидаемые\n"
             "/search текст — поиск\n"
             "/settings — настройки\n"
+            "/gmail_check — принудительно проверить почту\n"
             "/edit ID новый текст — изменить задачу"
         )

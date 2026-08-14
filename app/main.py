@@ -10,6 +10,8 @@ from app.api.routes.health import router as health_router
 from app.api.routes.tasks import router as tasks_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.dashboard.routes import api_router as dashboard_api_router
+from app.dashboard.routes import web_router as dashboard_web_router
 
 
 @asynccontextmanager
@@ -26,3 +28,5 @@ app.include_router(health_router)
 app.include_router(tasks_router)
 app.include_router(gmail_router)
 app.include_router(calendar_router)
+app.include_router(dashboard_api_router)
+app.include_router(dashboard_web_router)

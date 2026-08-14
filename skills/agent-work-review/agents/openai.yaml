@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Work Review"
+  short_description: "Audit agent actions and evidence"
+  default_prompt: "Use $agent-work-review to audit this task against its request, evidence, scope, and unresolved risks."

@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tasks.models import (
+    CandidateStatus,
     Contact,
     ProcessingStatus,
     SourceMessage,
@@ -19,6 +20,9 @@ from app.tasks.models import (
     TaskStatus,
     User,
     UserSettings,
+)
+from app.tasks.models import (
+    TaskCandidate as TaskCandidateRecord,
 )
 from app.tasks.schemas import ContactCreate, SourceMessageCreate, TaskCreate, TaskUpdate
 
@@ -344,9 +348,7 @@ class TaskService:
         if not normalized_name:
             raise ValueError("contact name must not be empty")
         user = await self.ensure_user(user_id)
-        contacts = await self.session.scalars(
-            select(Contact).where(Contact.user_id == user.id)
-        )
+        contacts = await self.session.scalars(select(Contact).where(Contact.user_id == user.id))
         for contact in contacts.all():
             if contact.name.casefold() == normalized_name.casefold():
                 return contact
@@ -421,6 +423,13 @@ class TaskService:
         source.classification = classification
         source.confidence = confidence
         source.extra = {**source.extra, "candidate": candidate}
+        source.processed_at = datetime.now(UTC)
+        await self.upsert_task_candidate(
+            source,
+            classification=classification,
+            confidence=confidence,
+            payload=candidate,
+        )
         await self.session.commit()
         await self.session.refresh(source)
         return source
@@ -437,11 +446,54 @@ class TaskService:
         source.processing_status = ProcessingStatus.PROCESSED
         source.classification = classification
         source.confidence = confidence
+        source.processed_at = datetime.now(UTC)
         if extra:
             source.extra = {**source.extra, **extra}
         await self.session.commit()
         await self.session.refresh(source)
         return source
+
+    async def upsert_task_candidate(
+        self,
+        source: SourceMessage,
+        classification: str,
+        confidence: float,
+        payload: dict[str, object],
+        detected_at: datetime | None = None,
+    ) -> TaskCandidateRecord:
+        record = await self.session.scalar(
+            select(TaskCandidateRecord).where(
+                TaskCandidateRecord.source_message_id == source.id,
+                TaskCandidateRecord.user_id == source.user_id,
+            )
+        )
+        if record is None:
+            record = TaskCandidateRecord(
+                user_id=source.user_id,
+                source_message_id=source.id,
+                classification=classification,
+                confidence=confidence,
+                payload=payload,
+                status=CandidateStatus.PENDING,
+                detected_at=detected_at or datetime.now(UTC),
+            )
+            self.session.add(record)
+        else:
+            record.classification = classification
+            record.confidence = confidence
+            record.payload = payload
+        await self.session.flush()
+        return record
+
+    async def get_task_candidate(
+        self, source_message_id: UUID, user_id: UUID | None = None
+    ) -> TaskCandidateRecord | None:
+        statement = select(TaskCandidateRecord).where(
+            TaskCandidateRecord.source_message_id == source_message_id
+        )
+        if user_id is not None:
+            statement = statement.where(TaskCandidateRecord.user_id == user_id)
+        return cast(TaskCandidateRecord | None, await self.session.scalar(statement))
 
     async def get_pending_candidate(self, user_id: UUID | None = None) -> SourceMessage | None:
         user = await self.ensure_user(user_id)
