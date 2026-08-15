@@ -27,6 +27,13 @@ from app.dashboard.service import (
     make_period,
 )
 from app.db.session import get_db_session
+from app.integrations.gmail.rules import (
+    DEFAULT_CLASSIFICATION_THRESHOLD,
+    GmailClassificationRule,
+    gmail_config,
+)
+from app.tasks.models import UserSettings
+from app.tasks.service import SYSTEM_USER_ID
 
 COOKIE_NAME = "ai_secretary_dashboard"
 COOKIE_TTL_SECONDS = 3600
@@ -38,6 +45,19 @@ api_router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 class DashboardLoginRequest(BaseModel):
     token: str = Field(min_length=1)
+
+
+class GmailSettingsRequest(BaseModel):
+    sender_allowlist: list[str] = Field(default_factory=list, max_length=200)
+    sender_blocklist: list[str] = Field(default_factory=list, max_length=200)
+    vip_senders: list[str] = Field(default_factory=list, max_length=200)
+    ignore_newsletters: bool = True
+    classification_threshold: float = Field(
+        default=DEFAULT_CLASSIFICATION_THRESHOLD, ge=0, le=1
+    )
+    classification_rules: list[GmailClassificationRule] = Field(
+        default_factory=list, max_length=100
+    )
 
 
 def _signature(timestamp: int) -> str:
@@ -142,6 +162,49 @@ async def dashboard_page(request: Request) -> Response:
     ):
         return RedirectResponse("/dashboard/login", status_code=303)
     return TEMPLATES.TemplateResponse(request, "dashboard.html", {})
+
+
+async def _get_owner_gmail_settings(session: AsyncSession) -> UserSettings:
+    settings = await session.get(UserSettings, SYSTEM_USER_ID)
+    if settings is None:
+        settings = UserSettings(user_id=SYSTEM_USER_ID)
+        session.add(settings)
+        await session.flush()
+    return settings
+
+
+@api_router.get("/gmail/settings", dependencies=[Depends(require_dashboard_access)])
+async def dashboard_gmail_settings(
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    settings = await _get_owner_gmail_settings(session)
+    config = gmail_config(settings)
+    payload = GmailSettingsRequest.model_validate(
+        {
+            "sender_allowlist": config.get("sender_allowlist", []),
+            "sender_blocklist": config.get("sender_blocklist", []),
+            "vip_senders": config.get("vip_senders", []),
+            "ignore_newsletters": config.get("ignore_newsletters", True),
+            "classification_threshold": config.get(
+                "classification_threshold", DEFAULT_CLASSIFICATION_THRESHOLD
+            ),
+            "classification_rules": config.get("classification_rules", []),
+        }
+    )
+    return payload.model_dump(mode="json")
+
+
+@api_router.put("/gmail/settings", dependencies=[Depends(require_dashboard_access)])
+async def update_dashboard_gmail_settings(
+    data: GmailSettingsRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    settings = await _get_owner_gmail_settings(session)
+    existing = dict(settings.extra or {})
+    existing["gmail"] = data.model_dump(mode="json")
+    settings.extra = existing
+    await session.commit()
+    return data.model_dump(mode="json")
 
 
 @api_router.get("/overview", dependencies=[Depends(require_dashboard_access)])

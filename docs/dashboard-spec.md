@@ -216,7 +216,8 @@ Health indicator раскрывается в список `integration_poll_runs
 - `received_at`, `processed_at`;
 - sender и subject;
 - безопасная ссылка на Gmail;
-- classification и confidence;
+- classification, confidence и применённый classification threshold;
+- сработавшее пользовательское правило классификации, если оно есть;
 - processing status;
 - filter decision или error code;
 - candidate status;
@@ -290,6 +291,8 @@ GET /dashboard/candidates
 GET /dashboard/candidates/{candidate_id}
 GET /dashboard/operations
 GET /dashboard/poll-runs
+GET /dashboard/gmail/settings
+PUT /dashboard/gmail/settings
 ```
 
 Общие параметры: `from`, `to`, `timezone`, `account_id`, `limit`, `cursor` и

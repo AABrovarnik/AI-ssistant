@@ -6,6 +6,10 @@ import pytest
 from app.db.session import session_factory
 from app.integrations.gmail.client import GmailMessage
 from app.integrations.gmail.oauth_state import OAuthStateError, create_state, verify_state
+from app.integrations.gmail.rules import (
+    classification_threshold,
+    matched_classification_rule,
+)
 from app.integrations.gmail.service import (
     GmailFilterDecision,
     GmailInboxService,
@@ -141,6 +145,58 @@ def test_gmail_filter_defaults_to_normal_and_ignores_newsletters() -> None:
     newsletter = gmail_message()
     newsletter = GmailMessage(**{**newsletter.__dict__, "list_unsubscribe": True})
     assert gmail_filter_decision(newsletter, normal) == GmailFilterDecision.IGNORE
+
+
+def test_gmail_rules_match_sender_and_subject_with_priority() -> None:
+    settings = UserSettings(
+        user_id=UUID(int=1),
+        extra={
+            "gmail": {
+                "classification_threshold": 0.82,
+                "classification_rules": [
+                    {
+                        "id": "generic-client",
+                        "priority": 10,
+                        "conditions": {"sender_domain": "example.com"},
+                        "classification": "INFORMATION",
+                    },
+                    {
+                        "id": "documents-request",
+                        "priority": 100,
+                        "conditions": {
+                            "sender": "client@example.com",
+                            "subject_contains": "документы",
+                        },
+                        "classification": "TASK",
+                        "reason": "Клиентский запрос документов",
+                    },
+                ],
+            }
+        },
+    )
+
+    rule = matched_classification_rule(gmail_message(), settings)
+
+    assert rule is not None
+    assert rule.id == "documents-request"
+    assert rule.classification == "TASK"
+    assert classification_threshold(settings) == 0.82
+
+
+def test_malformed_or_empty_gmail_rule_does_not_match() -> None:
+    settings = UserSettings(
+        user_id=UUID(int=1),
+        extra={
+            "gmail": {
+                "classification_rules": [
+                    {"id": "empty", "conditions": {}, "classification": "TASK"},
+                    {"id": "bad", "conditions": {"sender": "*"}, "classification": "NOPE"},
+                ]
+            }
+        },
+    )
+
+    assert matched_classification_rule(gmail_message(), settings) is None
 
 
 def test_gmail_poll_query_respects_history_cutoff() -> None:

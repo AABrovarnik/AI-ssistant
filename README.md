@@ -116,6 +116,28 @@ only sends task candidates to Telegram for confirmation.
 The Telegram owner can run the same check with `/gmail_check` (or
 `/gmail_poll`).
 
+Gmail sender lists and classification rules are editable in the owner-only
+dashboard under «Настройки Gmail». The threshold is stored per processed
+message for auditability. A rule can match sender/address domain, subject, or
+body text and has a priority; supported outcomes are the normal LLM
+classifications plus `IGNORE`. Rules only affect classification/filtering —
+creating a task still requires Telegram confirmation.
+
+Example rule:
+
+```json
+{
+  "id": "client-documents",
+  "priority": 100,
+  "conditions": {
+    "sender_domain": "client.example",
+    "subject_contains": ["документы", "договор"]
+  },
+  "classification": "TASK",
+  "reason": "Запрос документов от клиента"
+}
+```
+
 Google Calendar is opt-in with `GOOGLE_CALENDAR_ENABLED=true`. It reuses the
 configured Google OAuth client and stores Calendar credentials encrypted. Open
 `GET /integrations/calendar/authorize`, complete consent for the

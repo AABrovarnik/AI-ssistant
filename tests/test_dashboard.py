@@ -13,6 +13,7 @@ from app.tasks.models import (
     PollRunStatus,
     PollRunTrigger,
     TaskCandidate,
+    TaskSource,
     UserSettings,
 )
 from app.tasks.schemas import SourceMessageCreate, TaskCreate
@@ -75,6 +76,16 @@ async def test_dashboard_overview_matches_drilldown() -> None:
         source.classification = "TASK"
         source.confidence = 0.95
         source.processed_at = observed_at
+        source.extra = {
+            "gmail": {
+                "classification_threshold": 0.82,
+                "classification_rule": {
+                    "id": "dashboard-rule",
+                    "classification": "TASK",
+                    "reason": "Тестовое правило",
+                },
+            }
+        }
         candidate = TaskCandidate(
             user_id=user.id,
             source_message_id=source.id,
@@ -113,6 +124,11 @@ async def test_dashboard_overview_matches_drilldown() -> None:
                 idempotency_key="dashboard-task-1",
             )
         )
+        task_source = await session.scalar(
+            select(TaskSource).where(TaskSource.task_id == task.id)
+        )
+        assert task_source is not None
+        task_source.created_at = observed_at
         candidate = await session.scalar(
             select(TaskCandidate).where(TaskCandidate.source_message_id == source.id)
         )
@@ -138,5 +154,7 @@ async def test_dashboard_overview_matches_drilldown() -> None:
     assert timeseries.status_code == 200
     assert timeseries.json()["points"][0]["messages"] == 1
     assert len(messages.json()["items"]) == 1
+    assert messages.json()["items"][0]["classification_threshold"] == 0.82
+    assert messages.json()["items"][0]["classification_rule"]["id"] == "dashboard-rule"
     assert len(candidates.json()["items"]) == 1
     assert len(tasks.json()["items"]) == 1

@@ -12,6 +12,7 @@
       header { display: flex; justify-content: space-between; gap: 1rem; align-items: center; }
       .controls { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; }
       input, button { padding: .5rem; }
+      textarea { width: 100%; min-height: 4rem; box-sizing: border-box; font: inherit; }
       button { cursor: pointer; }
       .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .7rem; }
       .card { border: 1px solid #dfe5ea; border-radius: .5rem; padding: .7rem; }
@@ -47,6 +48,21 @@
         </div>
         <p id="error" class="error"></p>
       </section>
+      <section><h2>Настройки Gmail</h2>
+        <div class="controls">
+          <label>Порог классификации <input id="classification-threshold" type="number" min="0" max="1" step="0.01"></label>
+          <label><input id="ignore-newsletters" type="checkbox"> Игнорировать рассылки</label>
+          <button id="save-gmail-settings">Сохранить настройки</button>
+        </div>
+        <p class="muted">По одному адресу, домену или glob-шаблону в строке.</p>
+        <div class="controls">
+          <label style="flex:1">Белый список отправителей<textarea id="sender-allowlist"></textarea></label>
+          <label style="flex:1">Чёрный список отправителей<textarea id="sender-blocklist"></textarea></label>
+          <label style="flex:1">VIP отправители<textarea id="vip-senders"></textarea></label>
+        </div>
+        <label>Правила классификации (JSON, порядок определяется priority)<textarea id="classification-rules" placeholder='[{"id":"invoice","priority":100,"conditions":{"sender_domain":"client.example"},"classification":"TASK","reason":"Письма клиента"}]'></textarea></label>
+        <p id="settings-status" class="muted"></p>
+      </section>
       <section><h2>KPI</h2><div id="metrics" class="cards"></div></section>
       <section><h2>Funnel</h2><div id="funnel" class="funnel"></div></section>
       <section><h2>Динамика по дням</h2><div id="timeseries"></div></section>
@@ -68,6 +84,47 @@
         return p;
       };
       const format = (value) => value ? new Date(value).toLocaleString() : '—';
+      const columnLabels = {
+        id: 'ID', external_id: 'Gmail ID', received_at: 'Получено', processed_at: 'Обработано',
+        sender: 'Отправитель', sender_email: 'Email', subject: 'Тема', source_url: 'Ссылка',
+        processing_status: 'Статус обработки', classification: 'Классификация', confidence: 'Уверенность',
+        classification_threshold: 'Порог классификации', classification_rule: 'Сработавшее правило',
+        filter_decision: 'Фильтр', error_code: 'Код ошибки', candidate_id: 'Candidate ID',
+        candidate_status: 'Статус candidate', task_id: 'Task ID', task_title: 'Задача'
+      };
+      const lines = (value) => (value || []).join('\n');
+      const parseLines = (id) => document.getElementById(id).value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+      async function loadGmailSettings() {
+        const response = await fetch('/dashboard/gmail/settings');
+        if (!response.ok) throw new Error('Не удалось загрузить настройки Gmail');
+        const data = await response.json();
+        document.getElementById('classification-threshold').value = data.classification_threshold;
+        document.getElementById('ignore-newsletters').checked = data.ignore_newsletters;
+        document.getElementById('sender-allowlist').value = lines(data.sender_allowlist);
+        document.getElementById('sender-blocklist').value = lines(data.sender_blocklist);
+        document.getElementById('vip-senders').value = lines(data.vip_senders);
+        document.getElementById('classification-rules').value = JSON.stringify(data.classification_rules, null, 2);
+      }
+      async function saveGmailSettings() {
+        const status = document.getElementById('settings-status');
+        status.textContent = '';
+        let rules;
+        try { rules = JSON.parse(document.getElementById('classification-rules').value || '[]'); }
+        catch (error) { status.textContent = 'Некорректный JSON правил'; return; }
+        const response = await fetch('/dashboard/gmail/settings', {
+          method: 'PUT', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            sender_allowlist: parseLines('sender-allowlist'),
+            sender_blocklist: parseLines('sender-blocklist'),
+            vip_senders: parseLines('vip-senders'),
+            ignore_newsletters: document.getElementById('ignore-newsletters').checked,
+            classification_threshold: Number(document.getElementById('classification-threshold').value),
+            classification_rules: rules
+          })
+        });
+        if (!response.ok) { status.textContent = 'Не удалось сохранить настройки'; return; }
+        status.textContent = 'Настройки сохранены';
+      }
       async function loadOverview() {
         const response = await fetch('/dashboard/overview?' + params());
         if (!response.ok) throw new Error('Не удалось загрузить dashboard');
@@ -91,7 +148,7 @@
         const items = data.items || [];
         if (!items.length) { document.getElementById('table').innerHTML = '<p class="muted">Нет строк для выбранных фильтров.</p>'; return; }
         const keys = Object.keys(items[0]);
-        document.getElementById('table').innerHTML = `<table><thead><tr>${keys.map(k => `<th>${esc(k)}</th>`).join('')}</tr></thead><tbody>${items.map(item => `<tr>${keys.map(k => `<td>${esc(typeof item[k] === 'object' ? JSON.stringify(item[k]) : item[k])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+        document.getElementById('table').innerHTML = `<table><thead><tr>${keys.map(k => `<th>${esc(columnLabels[k] || k)}</th>`).join('')}</tr></thead><tbody>${items.map(item => `<tr>${keys.map(k => `<td>${esc(typeof item[k] === 'object' ? JSON.stringify(item[k]) : item[k])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
       }
       async function refresh(view) {
         document.getElementById('error').textContent = '';
@@ -99,9 +156,10 @@
         catch (error) { document.getElementById('error').textContent = error.message; }
       }
       document.getElementById('refresh').addEventListener('click', () => refresh());
+      document.getElementById('save-gmail-settings').addEventListener('click', () => saveGmailSettings().catch(error => { document.getElementById('settings-status').textContent = error.message; }));
       document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => refresh(button.dataset.view)));
       document.getElementById('logout').addEventListener('click', async () => { await fetch('/dashboard/logout', {method: 'POST'}); window.location = '/dashboard/login'; });
-      refresh();
+      loadGmailSettings().then(() => refresh()).catch(error => { document.getElementById('error').textContent = error.message; });
     </script>
   </body>
 </html>

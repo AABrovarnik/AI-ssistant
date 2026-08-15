@@ -48,7 +48,10 @@ class LLMService:
         self.timezone = timezone
 
     async def classify_message(
-        self, text: str, current_datetime: datetime | None = None
+        self,
+        text: str,
+        current_datetime: datetime | None = None,
+        confidence_threshold: float = CONFIDENCE_THRESHOLD,
     ) -> ClassificationResult:
         now = self._current_datetime(current_datetime)
         system = self._system_prompt(CLASSIFIER_SYSTEM, ClassificationResult)
@@ -56,7 +59,7 @@ class LLMService:
             [context_block(now, self.timezone), data_block("message", text)]
         )
         result = await self._complete(system, user, ClassificationResult)
-        if result.confidence < CONFIDENCE_THRESHOLD:
+        if result.confidence < confidence_threshold:
             result.classification = MessageClassification.UNCLEAR
         return result
 
@@ -101,9 +104,24 @@ class LLMService:
         return await self._complete(system, user, SearchParseResult)
 
     async def parse_message(
-        self, text: str, current_datetime: datetime | None = None
+        self,
+        text: str,
+        current_datetime: datetime | None = None,
+        confidence_threshold: float = CONFIDENCE_THRESHOLD,
+        classification_override: MessageClassification | None = None,
     ) -> ParsedMessage:
-        classification = await self.classify_message(text, current_datetime)
+        if classification_override is None:
+            classification = await self.classify_message(
+                text,
+                current_datetime,
+                confidence_threshold=confidence_threshold,
+            )
+        else:
+            classification = ClassificationResult(
+                classification=classification_override,
+                confidence=1.0,
+                reason="USER_CLASSIFICATION_RULE",
+            )
         extraction = None
         if classification.classification in {
             MessageClassification.TASK,

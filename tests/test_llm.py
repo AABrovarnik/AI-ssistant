@@ -103,6 +103,16 @@ async def test_low_confidence_is_forced_to_unclear() -> None:
 
 
 @pytest.mark.asyncio
+async def test_configured_confidence_threshold_is_applied() -> None:
+    provider = FakeProvider(classification(confidence=0.79))
+    service = LLMService(provider, "test-model")
+
+    result = await service.classify_message("Письмо", confidence_threshold=0.8)
+
+    assert result.classification == MessageClassification.UNCLEAR
+
+
+@pytest.mark.asyncio
 async def test_search_parser_returns_validated_filters() -> None:
     provider = FakeProvider(
         json.dumps(

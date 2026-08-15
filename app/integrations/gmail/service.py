@@ -13,7 +13,16 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.integrations.gmail.client import GmailClientProtocol, GmailMessage
-from app.llm.schemas import MessageClassification, TaskCandidate
+from app.integrations.gmail.rules import (
+    classification_threshold,
+    matched_classification_rule,
+)
+from app.llm.schemas import (
+    ClassificationResult,
+    MessageClassification,
+    ParsedMessage,
+    TaskCandidate,
+)
 from app.llm.service import LLMParseError, LLMService
 from app.tasks.models import CandidateStatus, IntegrationAccount, ProcessingStatus, UserSettings
 from app.tasks.schemas import SourceMessageCreate
@@ -126,6 +135,8 @@ class GmailInboxService:
                     continue
                 try:
                     message = await client.get_message(message_id)
+                    threshold = classification_threshold(user_settings)
+                    matched_rule = matched_classification_rule(message, user_settings)
                     source = existing
                     if source is None:
                         source = await service.create_source_message(
@@ -155,6 +166,16 @@ class GmailInboxService:
                                 for key, value in message.headers.items()
                                 if key in {"message-id", "list-unsubscribe", "reply-to"}
                             },
+                            "classification_threshold": threshold,
+                            "classification_rule": (
+                                {
+                                    "id": matched_rule.id,
+                                    "classification": matched_rule.classification,
+                                    "reason": matched_rule.reason,
+                                }
+                                if matched_rule is not None
+                                else None
+                            ),
                         },
                     }
                     if decision == GmailFilterDecision.IGNORE:
@@ -163,15 +184,61 @@ class GmailInboxService:
                         source.processed_at = current
                         result = self._increment(result, "ignored")
                         continue
-                    if llm_service is None:
+                    if matched_rule is not None and matched_rule.classification == "IGNORE":
+                        source.processing_status = ProcessingStatus.IGNORED
+                        source.error_code = "GMAIL_RULE_IGNORED"
+                        source.processed_at = current
+                        result = self._increment(result, "ignored")
+                        continue
+                    rule_requires_extraction = (
+                        matched_rule is not None
+                        and matched_rule.classification
+                        in {
+                            MessageClassification.TASK.value,
+                            MessageClassification.DELEGATION.value,
+                            MessageClassification.AWAITING.value,
+                        }
+                    )
+                    if llm_service is None and (matched_rule is None or rule_requires_extraction):
                         source.processing_status = ProcessingStatus.FAILED
                         source.error_code = "LLM_UNAVAILABLE"
                         source.processed_at = current
                         result = self._increment(result, "failed")
                         continue
-                    parsed = await llm_service.parse_message(
-                        self._llm_text(message), current_datetime=current
-                    )
+                    if matched_rule is not None and not rule_requires_extraction:
+                        parsed = ParsedMessage(
+                            classification=ClassificationResult(
+                                classification=MessageClassification(matched_rule.classification),
+                                confidence=1.0,
+                                reason=matched_rule.reason,
+                            )
+                        )
+                    else:
+                        assert llm_service is not None
+                        try:
+                            parsed = await llm_service.parse_message(
+                                self._llm_text(message),
+                                current_datetime=current,
+                                confidence_threshold=threshold,
+                                classification_override=(
+                                    MessageClassification(matched_rule.classification)
+                                    if matched_rule is not None
+                                    and matched_rule.classification != "IGNORE"
+                                    else None
+                                ),
+                            )
+                        except TypeError as exc:
+                            # Keep compatibility with lightweight provider doubles that
+                            # implement the pre-rules parse_message signature.
+                            unsupported_options = (
+                                "confidence_threshold" not in str(exc)
+                                and "classification_override" not in str(exc)
+                            )
+                            if unsupported_options:
+                                raise
+                            parsed = await llm_service.parse_message(
+                                self._llm_text(message), current_datetime=current
+                            )
                     candidate = parsed.extraction.candidate if parsed.extraction else None
                     if candidate is None or parsed.classification.classification not in {
                         MessageClassification.TASK,

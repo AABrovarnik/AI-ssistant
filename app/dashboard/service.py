@@ -507,6 +507,16 @@ class DashboardQueryService:
         filter_decision = (
             gmail_metadata.get("filter_decision") if isinstance(gmail_metadata, dict) else None
         )
+        classification_threshold = (
+            gmail_metadata.get("classification_threshold")
+            if isinstance(gmail_metadata, dict)
+            else None
+        )
+        classification_rule = (
+            gmail_metadata.get("classification_rule")
+            if isinstance(gmail_metadata, dict)
+            else None
+        )
         return {
             "id": source.id,
             "external_id": source.external_id,
@@ -519,6 +529,8 @@ class DashboardQueryService:
             "processing_status": source.processing_status,
             "classification": source.classification,
             "confidence": source.confidence,
+            "classification_threshold": classification_threshold,
+            "classification_rule": classification_rule,
             "filter_decision": filter_decision,
             "error_code": source.error_code,
             "candidate_id": candidate.id if candidate else None,
