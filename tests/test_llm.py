@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+from app.llm.prompts import CLASSIFIER_SYSTEM
 from app.llm.provider import OpenAICompatibleProvider
 from app.llm.schemas import MessageClassification
 from app.llm.service import LLMService
@@ -42,6 +43,21 @@ def candidate() -> dict[str, object]:
         "confidence": 0.91,
         "evidence": "подготовить смету",
     }
+
+
+def test_classifier_prompt_treats_provide_as_an_action_request() -> None:
+    assert "глагола «предоставить»" in CLASSIFIER_SYSTEM
+    assert "на выполнение, а не INFORMATION" in CLASSIFIER_SYSTEM.replace("\n", " ")
+    assert "INFORMATION используй только для запроса сведений" in CLASSIFIER_SYSTEM.replace(
+        "\n", " "
+    )
+
+
+def test_classifier_prompt_does_not_extract_tasks_from_reports() -> None:
+    normalized = CLASSIFIER_SYSTEM.replace("\n", " ")
+    assert "пункты уже сформированного отчёта" in normalized
+    assert "Ответ не требуется" in normalized
+    assert "это STATUS_UPDATE, а не TASK и не INFORMATION" in normalized
 
 
 @pytest.mark.asyncio
