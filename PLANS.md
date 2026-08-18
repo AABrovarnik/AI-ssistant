@@ -165,3 +165,14 @@ Implement the approved owner-only read-only dashboard described in
   smoke requests.
 - Rollback: stop serving dashboard routes and downgrade only the dashboard
   migration; do not alter existing Gmail messages or tasks.
+
+## 2026-08-18 — Overdue task completion fix
+
+- [completed] Allow `DONE` from active task statuses that can appear in the
+  overdue view (`NEW`, `PLANNED`, `POSTPONED`, and `ON_HOLD`).
+- [completed] Add API and PostgreSQL regression coverage for completing an
+  overdue/new task and a postponed task.
+- [completed] Rebuild API and worker on the VPS and verify health, migration
+  head, authenticated overdue listing, and clean startup logs.
+- [pending] Owner must click the task's `✅ Выполнено` action to close the
+  existing overdue task; the production smoke did not mutate it.

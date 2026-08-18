@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -64,4 +65,27 @@ async def test_failed_transition_does_not_change_persisted_task() -> None:
         assert persisted.status == TaskStatus.DONE
         await session.execute(delete(AuditEvent).where(AuditEvent.task_id == persisted.id))
         await session.execute(delete(Task).where(Task.id == persisted.id))
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_postponed_task_can_be_completed() -> None:
+    if not _postgres_enabled():
+        pytest.skip("set RUN_POSTGRES_TESTS=1 with a PostgreSQL DATABASE_URL")
+    key = f"pg-postponed-complete-{uuid4()}"
+    async with session_factory() as session:
+        service = TaskService(session)
+        task = await service.create(TaskCreate(title="Postponed task", idempotency_key=key))
+        task = await service.postpone(
+            task.id,
+            datetime.now(UTC) + timedelta(days=1),
+            task.version,
+            f"{key}-postpone",
+        )
+        completed = await service.complete(task.id, f"{key}-complete", task.version)
+
+        assert completed.status == TaskStatus.DONE
+
+        await session.execute(delete(AuditEvent).where(AuditEvent.task_id == task.id))
+        await session.execute(delete(Task).where(Task.id == task.id))
         await session.commit()

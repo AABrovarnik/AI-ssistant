@@ -78,6 +78,7 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.UNKNOWN_PARTY,
         TaskStatus.IN_PROGRESS,
         TaskStatus.WAITING,
+        TaskStatus.DONE,
         TaskStatus.POSTPONED,
     },
     TaskStatus.IN_PROGRESS: {
@@ -97,11 +98,13 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.UNKNOWN_PARTY,
         TaskStatus.PLANNED,
         TaskStatus.IN_PROGRESS,
+        TaskStatus.DONE,
     },
     TaskStatus.ON_HOLD: {
         TaskStatus.UNKNOWN_PARTY,
         TaskStatus.PLANNED,
         TaskStatus.IN_PROGRESS,
+        TaskStatus.DONE,
     },
     TaskStatus.OVERDUE: {
         TaskStatus.UNKNOWN_PARTY,

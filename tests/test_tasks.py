@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import httpx
@@ -31,6 +32,29 @@ async def test_task_create_is_idempotent_and_complete_is_auditable() -> None:
     assert first.json()["id"] == second.json()["id"]
     assert completed.json()["status"] == "done"
     assert repeated.json()["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_overdue_new_task_can_be_completed() -> None:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/tasks",
+            json={
+                "title": "Overdue personal task",
+                "due_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+                "idempotency_key": f"overdue-complete-{uuid4()}",
+            },
+            headers=AUTH,
+        )
+        completed = await client.post(
+            f"/tasks/{created.json()['id']}/complete",
+            headers={**AUTH, "Idempotency-Key": f"complete-overdue-{uuid4()}"},
+        )
+
+    assert created.status_code == 201
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "done"
 
 
 @pytest.mark.asyncio

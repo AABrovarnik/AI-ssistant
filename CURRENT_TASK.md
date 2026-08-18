@@ -1,6 +1,10 @@
 # Current Task
 
 ## Now
+- 2026-08-18: исправлено завершение просроченных задач. Просроченность
+  вычисляется по `due_at`, поэтому задача могла оставаться в статусе `NEW` или
+  `POSTPONED`; переходы в `DONE` разрешены для всех активных состояний,
+  API/worker пересобраны и production smoke пройден.
 - Phase 10 operations checklist complete; local backup automation and controlled API/worker restart smoke test passed.
 - Gmail polling restored on 2026-08-14 after configuring the OpenClaw API key, resetting the
   Gmail account from `ERROR` to `CONNECTED`, and verifying a successful manual poll.
@@ -12,9 +16,9 @@
   Gmail/candidate lifecycle, owner-scoped API and web UI are deployed.
 
 ## Done
-- Phase 9 E2E hardening; local suite currently passes 57 tests with 6 PostgreSQL-opt-in skips.
+- Phase 9 E2E hardening; local suite currently passes 65 tests with 7 PostgreSQL-opt-in skips.
 - Local Compose, health endpoints, migrations, isolated PostgreSQL backup/restore, and runtime secret-log review completed on 2026-08-14.
-- Dashboard-focused tests and the existing suite currently pass `59 passed, 6 skipped`.
+- Dashboard-focused tests and the existing suite currently pass `65 passed, 7 skipped`.
 - Production smoke passed on 2026-08-14: migration `20260814_06 (head)`, API and
   worker healthy, unauthenticated API `401`, authenticated API/web `200`.
 
@@ -26,3 +30,12 @@
 
 ## Blockers
 - Backups are local-only; offsite replication and alerting are not configured.
+
+## Latest production verification — 2026-08-18
+
+- `api` and `worker` were rebuilt and restarted; PostgreSQL was not restarted.
+- `/health/live` and `/health/ready` returned `200` with `{"status":"ok"}`.
+- Alembic remains at `20260814_06 (head)`.
+- Authenticated `GET /tasks/views/overdue` returned the expected overdue task;
+  no task was closed automatically during the smoke test.
+- Fresh API/worker logs show clean startup and no errors.
